@@ -258,7 +258,9 @@ def run_absolute_truth_pipeline():
     history = []
 
     print(f"🚀 Starting TTA Optimization on 7SMV Target ({pos_P.size(0)} residues)...")
-    for step in range(1, 51):
+    print("   [Protocol] Extending rigorous minimization to 1000 steps for ICLR standard.")
+    
+    for step in range(1, 1001):
         optimizer.zero_grad()
         out = model(data)
         
@@ -284,8 +286,8 @@ def run_absolute_truth_pipeline():
         optimizer.step()
         
         history.append(reward.item())
-        if step % 10 == 0:
-            print(f"   [Step {step:02d}] Est. Affinity: {reward.item():.4f} kcal/mol proxy")
+        if step % 100 == 0:
+            print(f"   [Step {step:04d}] Total: {reward.item():.2f} | VdW+Elec: {energy.item():.2f} | Repul: {repulsion.item():.2f}")
 
     # 6. Final RDKit Validation (The Absolute Truth Audit)
     print("\n⚖️  Final Scientific Audit (Real RDKit Evaluation)...")

@@ -140,7 +140,7 @@ class AblationSuite:
         opt = Muon(model.parameters(), lr=0.01) if use_muon else torch.optim.AdamW(model.parameters(), lr=0.001)
         history = []
         
-        for step in range(1, 51):
+        for step in range(1, 1001):
             model.train(); opt.zero_grad()
             out = model(data)
             
