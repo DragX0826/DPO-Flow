@@ -19,6 +19,20 @@ class RectifiedFlow(nn.Module):
         self.motif_decomposer = MotifDecomposer()
         self.physics_engine = PhysicsEngine() # SOTA Phase 51: Training with Physics
 
+    def forward(self, data, t=None):
+        """
+        Required for direct module calls (e.g. TTA or inference).
+        Defaults to t=1.0 (target velocity) if not specified.
+        """
+        device = data.x_L.device
+        batch_size = data.num_graphs if hasattr(data, 'num_graphs') else 1
+        if t is None:
+            t = torch.ones(batch_size, device=device)
+        
+        # Backbone returns (res, confidence, kl_div)
+        res, _, _ = self.backbone(t, data)
+        return res
+
     def loss(self, data, reduction='mean'):
         """
         Flow Matching Loss.
