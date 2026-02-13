@@ -16,17 +16,18 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+import torch
+import warnings
+import zipfile
+import shutil
+import math
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+warnings.filterwarnings('ignore', category=UserWarning)
+
 # Silence RDKit
 from rdkit import RDLogger, Chem
 from rdkit.Chem import AllChem, Descriptors, QED, Draw
 RDLogger.DisableLog('rdApp.*')
-
-import pandas as pd
-import zipfile
-import shutil
-import time
-import math
-import numpy as np
 
 # --- 1. Environment Setup (Auto-install if needed) ---
 print("⚙️ [1/7] Installing Dependencies (Auto-Detecting GPU)...")
