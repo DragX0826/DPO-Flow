@@ -1,5 +1,6 @@
 import os
 import sys
+import subprocess
 import time
 import copy
 import zipfile
@@ -13,10 +14,33 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from datetime import datetime
 
-# --- SECTION 0: KAGGLE / LOCAL ENVIRONMENT SETUP ---
+# --- SECTION 0: KAGGLE DEPENDENCY AUTO-INSTALLER ---
+def auto_install_deps():
+    required = ["rdkit", "meeko", "biopython"]
+    missing = []
+    for pkg in required:
+        try:
+            __import__(pkg)
+        except ImportError:
+            missing.append(pkg)
+    
+    if missing:
+        print(f"🛠️  Missing dependencies found: {missing}. Installing...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install"] + missing)
+        print("✅ Dependencies Installed.")
+
+auto_install_deps()
+
+# --- SECTION 1: KAGGLE ENVIRONMENT SETUP ---
 def setup_environment():
     """Harden path discovery for core maxflow engine."""
-    roots = [os.getcwd(), os.path.join(os.getcwd(), 'maxflow-core'), '/kaggle/input/maxflow-engine/maxflow-core']
+    print("🛠️  Authenticating Kaggle Workspace...")
+    roots = [
+        os.getcwd(), 
+        os.path.join(os.getcwd(), 'maxflow-core'),
+        '/kaggle/input/maxflow-engine/maxflow-core',
+        '/kaggle/input/maxflow-core'
+    ]
     for r in roots:
         if os.path.exists(r) and 'maxflow' in os.listdir(r):
             if r not in sys.path: sys.path.insert(0, r)
@@ -34,7 +58,7 @@ try:
     from maxflow.utils.physics import PhysicsEngine
     from rdkit import Chem
     from rdkit.Chem import QED
-    print("⚛️  MaxFlow Deep Impact Engine Initialized (v10.0).")
+    print(" MaxFlow Deep Impact Engine Initialized (v10.0).")
 except ImportError as e:
     print(f"❌ Structural Failure: {e}. Ensure maxflow-core is in the path.")
     sys.exit(1)
@@ -42,74 +66,93 @@ except ImportError as e:
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 warnings.filterwarnings('ignore')
 
-# --- SECTION 1: ABLATION RUNNER CORE ---
+# --- SECTION 1: SCIENTIFIC UTILITIES ---
+class RealPDBFeaturizer:
+    def fetch(self):
+        target = "7SMV.pdb"
+        if not os.path.exists(target):
+            import urllib.request
+            urllib.request.urlretrieve(f"https://files.rcsb.org/download/{target}", target)
+        return target
+
+    def parse(self, path):
+        coords, feats = [], []
+        with open(path, 'r') as f:
+            for line in f:
+                if line.startswith('ATOM') and line[12:16].strip() == 'CA':
+                    pos = np.array([float(line[30:38]), float(line[38:46]), float(line[46:54])])
+                    coords.append(pos); feats.append(np.zeros(21)) 
+        return torch.tensor(np.array(coords), dtype=torch.float32).to(device), torch.tensor(np.array(feats), dtype=torch.float32).to(device)
+
+# --- SECTION 2: ABLATION RUNNER CORE ---
 class AblationSuite:
-    def __init__(self, model_path=None):
+    def __init__(self):
         self.results = []
         self.device = device
-        self.physics = PhysicsEngine()
+        self.feater = RealPDBFeaturizer()
         
     def run_configuration(self, name, use_mamba=True, use_maxrl=True, use_muon=True):
         print(f"🚀 Running Ablation: {name}...")
         
-        # 1. Setup Model (Standard vs Ablated)
+        # 1. Setup Ablated Backbone
         backbone = CrossGVP(node_in_dim=167, hidden_dim=64, num_layers=3).to(self.device)
+        if not use_mamba:
+            print("   [Ablation] Disabling Mamba-3 Global Mixer...")
+            backbone.global_mixer = nn.Identity() # The "Standard GNN" ablation
+            
         model = RectifiedFlow(backbone).to(self.device)
         
-        # Load weights if available
-        if os.path.exists('maxflow_pretrained.pt'):
-            sd = torch.load('maxflow_pretrained.pt', map_location=self.device, weights_only=False)
-            model.load_state_dict(sd['model_state_dict'] if 'model_state_dict' in sd else sd, strict=False)
+        # 2. Fetch Real Target (7SMV)
+        pdb_path = self.feater.fetch()
+        pos_P, x_P = self.feater.parse(pdb_path)
+        q_P = torch.randn(pos_P.shape[0], device=self.device) * 0.1
 
-        # 2. Setup A/B Test Data (Fixed Seed for Rigor)
+        # 3. Fixed Batch Setup
         torch.manual_seed(42)
-        batch_size = 8
+        batch_size = 16
         fixed_x_L = torch.randn(batch_size, 167, device=self.device)
         fixed_pos_L = torch.randn(batch_size, 3, device=self.device)
-        
-        # Protein (7SMV) - Mocked for speed here, usually fetched from RealPDBFeaturizer
-        pos_P = torch.randn(100, 3, device=self.device)
-        x_P = torch.randn(100, 21, device=self.device)
-        q_P = torch.randn(100, device=self.device) * 0.1
+        fixed_q_L = torch.randn(batch_size, device=self.device) * 0.1
         
         data = FlowData(x_L=fixed_x_L, pos_L=fixed_pos_L, x_P=x_P, pos_P=pos_P, pocket_center=pos_P.mean(0, keepdim=True))
         data.x_L_batch = torch.zeros(batch_size, dtype=torch.long, device=self.device)
-        data.x_P_batch = torch.zeros(100, dtype=torch.long, device=self.device)
+        data.x_P_batch = torch.zeros(pos_P.shape[0], dtype=torch.long, device=self.device)
 
-        # 3. Optimization
+        # 4. Rigorous Optimization (TTA)
         opt = Muon(model.parameters(), lr=0.01) if use_muon else torch.optim.AdamW(model.parameters(), lr=0.001)
         history = []
         
-        for step in range(30):
+        for step in range(1, 51):
             model.train(); opt.zero_grad()
             out = model(data)
             
-            # Differentiable Energy
+            # Physics Feedback (Differentiable)
             next_pos = data.pos_L + out['v_pred'] * 0.1
             sys_pos = torch.cat([next_pos, pos_P], dim=0)
-            sys_q = torch.cat([torch.randn(batch_size, device=self.device)*0.1, q_P], dim=0)
+            sys_q = torch.cat([fixed_q_L, q_P], dim=0)
             
-            # Simple VdW + Elec fallback for ablation
+            # Autograd-friendly Energy Proxy
             dists = torch.cdist(next_pos, pos_P)
-            energy = (1.0/(dists+1e-6)**6).mean() # Representation of clash
+            energy = (1.0/(dists+1e-6)**6).mean() # Force repulsion
             
             if use_maxrl:
                 loss = maxrl_loss(out['v_pred'].mean(0), torch.full((3,), -energy.item(), device=self.device), torch.tensor(0.0, device=self.device))
             else:
-                loss = F.mse_loss(out['v_pred'], torch.zeros_like(out['v_pred'])) # Standard Flow
+                loss = F.mse_loss(out['v_pred'], torch.zeros_like(out['v_pred'])) + 0.1*energy
             
             loss.backward(); opt.step()
-            history.append(-energy.item())
+            history.append(-energy.item()) # Using kcal/mol proxy
 
-        # 4. Collection
-        self.results.append({'name': name, 'history': history, 'final': history[-1]})
-        print(f"✅ {name} Completed. Final Score: {history[-1]:.4f}")
+        # 5. Result Archival
+        self.results.append({'name': name, 'history': history, 'final': np.mean(history[-5:])})
+        print(f"✅ {name} Completed. Metric: {self.results[-1]['final']:.4f}")
 
-# --- SECTION 2: EXECUTION ---
+# --- SECTION 3: DEEP IMPACT EXECUTION ---
 suite = AblationSuite()
-suite.run_configuration("Full MaxFlow (SOTA)", use_mamba=True, use_maxrl=True, use_muon=True)
+suite.run_configuration("MaxFlow (Full SOTA)", use_mamba=True, use_maxrl=True, use_muon=True)
+suite.run_configuration("Ablation: No-Mamba-3", use_mamba=False, use_maxrl=True, use_muon=True)
 suite.run_configuration("Ablation: No-MaxRL", use_mamba=True, use_maxrl=False, use_muon=True)
-suite.run_configuration("Ablation: No-Muon (AdamW)", use_mamba=True, use_maxrl=True, use_muon=False)
+suite.run_configuration("Baseline: AdamW", use_mamba=True, use_maxrl=True, use_muon=False)
 
 # --- SECTION 3: PUBLICATION PLOTTING (Fig 3) ---
 plt.figure(figsize=(10, 6))
