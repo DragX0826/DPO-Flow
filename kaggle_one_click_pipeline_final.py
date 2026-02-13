@@ -264,6 +264,15 @@ def run_absolute_truth_pipeline():
         v_scaled = torch.clamp(out['v_pred'], min=-5.0, max=5.0) 
         next_pos = data.pos_L + v_scaled * 0.1
         
+        # [STABILITY] Pocket Guard: Prevent ligand from flying to infinity
+        # Center at pocket_center (PDB target center)
+        dist_from_pocket = (next_pos - data.pocket_center).norm(dim=-1)
+        if dist_from_pocket.max() > 15.0:
+            # Apply inward bias if outside 15A zone
+            next_pos = torch.where(dist_from_pocket.unsqueeze(-1) > 15.0, 
+                                   data.pocket_center + (next_pos - data.pocket_center) * (14.0 / dist_from_pocket).unsqueeze(-1), 
+                                   next_pos)
+
         energy = PhysicsEngine.compute_energy(next_pos, pos_P, q_L, q_P)
         repulsion = PhysicsEngine.calculate_intra_repulsion(next_pos)
         
@@ -423,10 +432,12 @@ $$$$
     if os.path.exists(ref_sdf):
         mol = Chem.MolFromMolFile(ref_sdf)
         if mol:
-            # Update positions from the optimized tensor (next_pos)
+            # [STABILITY] Audit Protection: Sanitize positions for RDKit
+            safe_pos = torch.nan_to_num(next_pos, 0.0).detach().cpu().numpy()
             conf = mol.GetConformer()
-            for i in range(min(mol.GetNumAtoms(), next_pos.size(0))):
-                p = next_pos[i].detach().cpu().numpy()
+            for i in range(min(mol.GetNumAtoms(), safe_pos.shape[0])):
+                # Explicitly cast to float for RDKit C++ layer
+                p = (float(safe_pos[i, 0]), float(safe_pos[i, 1]), float(safe_pos[i, 2]))
                 conf.SetAtomPosition(i, p)
             
             # Audit Metrics
