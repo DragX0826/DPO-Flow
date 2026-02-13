@@ -22,8 +22,7 @@ from rdkit import RDLogger, Chem
 from rdkit.Chem import AllChem, Descriptors, QED, Draw
 RDLogger.DisableLog('rdApp.*')
 import warnings
-warnings.filterwarnings('ignore', category=DeprecationWarning)
-warnings.filterwarnings('ignore', category=UserWarning)
+warnings.filterwarnings('ignore')
 
 # SOTA Fix: Kaggle Font Compatibility (Avoid "Times New Roman not found")
 plt.rcParams['font.family'] = 'sans-serif'

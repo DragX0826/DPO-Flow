@@ -16,12 +16,11 @@ class GlobalContextBlock(nn.Module):
         super().__init__()
         # SOTA Fix: Align d_state=16 and bidirectional mapping with maxflow_pretrained.pt
         self.mamba = SimpleS6(d_model, d_state=16) 
-        self.norm = nn.LayerNorm(d_model)
 
     def forward(self, x, batch_idx=None):
         # Mamba-3 handles batch-aware padding/unpadding internally via batch_idx
-        x_out = self.mamba(x, batch_idx=batch_idx)
-        return self.norm(x + x_out)
+        # Checkpoint uses direct Mamba output without post-norm residual
+        return x + self.mamba(x, batch_idx=batch_idx)
 
 class GVPEncoder(nn.Module):
     """
@@ -136,7 +135,11 @@ class CrossGVP(nn.Module):
         self.final_v = nn.Linear(16, 1) # Trans Velocity
         self.motif_pooling = MotifPooling(hidden_dim)
         self.omega_v = nn.Linear(16, 1) # Rot Velocity
-        self.atom_head = nn.Linear(hidden_dim, NUM_ATOM_TYPES) 
+        # Output Heads
+        self.final_s = nn.Linear(hidden_dim, hidden_dim)
+        self.final_v = nn.Linear(16, 1) # Trans Velocity
+        self.motif_pooling = MotifPooling(hidden_dim)
+        self.omega_v = nn.Linear(16, 1) # Rot Velocity
         self.conf_head = nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.SiLU(), nn.Linear(hidden_dim, 1))
         
         # Aux Heads
@@ -145,7 +148,6 @@ class CrossGVP(nn.Module):
         self.flex_head = FlexibilityHead(hidden_dim)
         self.admet_head = nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.SiLU(), nn.Linear(hidden_dim, 2))
         self.chiral_head = ChiralAwarenessHead(hidden_dim)
-        self.concept_head = ConceptHead(hidden_dim)
         
         self.time_mlp = nn.Sequential(nn.Linear(1, hidden_dim), nn.SiLU(), nn.Linear(hidden_dim, hidden_dim))
         self.center_proj = nn.Sequential(nn.Linear(1, hidden_dim), nn.SiLU(), nn.Linear(hidden_dim, hidden_dim))
