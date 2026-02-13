@@ -193,7 +193,7 @@ ckpt_path = find_checkpoint()
 backbone = CrossGVP(node_in_dim=167, hidden_dim=64, num_layers=3).to(device)
 model = RectifiedFlow(backbone).to(device)
 
-if os.path.exists(ckpt_path):
+if ckpt_path and os.path.exists(ckpt_path):
     checkpoint = torch.load(ckpt_path, map_location=device)
     state_dict = checkpoint['model_state_dict'] if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint else checkpoint
     
@@ -309,8 +309,12 @@ try:
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
         
-        losses.append(loss.item())
-        print(f"      Step {step+1}: MaxRL Loss = {loss.item():.4f} (Baseline: {baseline:.2f})")
+        if (step+1) % 10 == 0:
+            print(f"   -> Step {step+1}/{STEPS} | Reward: {rewards.mean().item():.3f} | Loss: {loss:.4f}")
+
+    # --- SOTA Export: Save the Fine-Tuned (MaxRL) model for download ---
+    print("💾 Saving MaxRL-Aligned Model...")
+    torch.save(model.state_dict(), 'maxflow_maxrl_aligned.pt')
 
     print(f"✅ Training Loop Verified ({time.time()-start_time:.2f}s). Policy Updated via Muon.")
 except Exception as e:
@@ -518,7 +522,10 @@ files_to_pack = [
 ]
 
 # If model checkpoint is not in current dir, try to copy it
-if not os.path.exists('maxflow_pretrained.pt') and os.path.exists(ckpt_path):
+if os.path.exists('maxflow_maxrl_aligned.pt'):
+    files_to_pack.append('maxflow_maxrl_aligned.pt')
+
+if not os.path.exists('maxflow_pretrained.pt') and ckpt_path and os.path.exists(ckpt_path):
     try:
         shutil.copy(ckpt_path, 'maxflow_pretrained.pt')
     except:
