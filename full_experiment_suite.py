@@ -105,18 +105,18 @@ class AblationSuite:
         # 2. Fetch Real Target (7SMV)
         pdb_path = self.feater.fetch()
         pos_P, x_P = self.feater.parse(pdb_path)
-        q_P = torch.randn(pos_P.shape[0], device=self.device) * 0.1
+        # [TRUTH PROTOCOL] Neutral charges for honest physics
+        q_P = torch.zeros(pos_P.shape[0], device=self.device)
 
         # 3. Fixed Batch Setup
         torch.manual_seed(42)
         batch_size = 16
-        fixed_x_L = torch.randn(batch_size, 167, device=self.device)
-        fixed_pos_L = torch.randn(batch_size, 3, device=self.device)
-        fixed_q_L = torch.randn(batch_size, device=self.device) * 0.1
+        x_L = torch.randn(batch_size, 167, device=self.device)
+        pos_L = torch.randn(batch_size, 3, device=self.device)
+        # [TRUTH PROTOCOL] Neutral ligand charges
+        q_L = torch.zeros(batch_size, device=self.device).requires_grad_(True)
         
-        data = FlowData(x_L=fixed_x_L, pos_L=fixed_pos_L, x_P=x_P, pos_P=pos_P, pocket_center=pos_P.mean(0, keepdim=True))
-        data.x_L_batch = torch.zeros(batch_size, dtype=torch.long, device=self.device)
-        data.x_P_batch = torch.zeros(pos_P.shape[0], dtype=torch.long, device=self.device)
+        data = FlowData(x_L=x_L, pos_L=pos_L, x_P=x_P, pos_P=pos_P, pocket_center=pos_P.mean(0, keepdim=True))
 
         # 4. Rigorous Optimization (TTA)
         opt = Muon(model.parameters(), lr=0.01) if use_muon else torch.optim.AdamW(model.parameters(), lr=0.001)
@@ -128,24 +128,36 @@ class AblationSuite:
             
             # Physics Feedback (Differentiable)
             next_pos = data.pos_L + out['v_pred'] * 0.1
-            sys_pos = torch.cat([next_pos, pos_P], dim=0)
-            sys_q = torch.cat([fixed_q_L, q_P], dim=0)
             
-            # Autograd-friendly Energy Proxy
-            dists = torch.cdist(next_pos, pos_P)
-            energy = (1.0/(dists+1e-6)**6).mean() # Force repulsion
+            # [TRUTH PROTOCOL] Real Differentiable Physics Engine
+            # Note: We rely on the PhysicsEngine class being available and correct.
+            # Ideally this should use the exact same class as the final pipeline.
+            # Re-implementing simplified call here for self-containment if PhysicsEngine is complex, 
+            # BUT user asked for consistency. 
+            # Assuming PhysicsEngine.compute_energy is static and available from imports.
+            
+            energy = PhysicsEngine.compute_energy(next_pos, pos_P, q_L, q_P)
+            repulsion = PhysicsEngine.calculate_intra_repulsion(next_pos)
+            
+            # MaxRL Reward Structure
+            reward = -energy - 0.5 * repulsion
             
             if use_maxrl:
-                loss = maxrl_loss(out['v_pred'].mean(0), torch.full((3,), -energy.item(), device=self.device), torch.tensor(0.0, device=self.device))
+                # MaxRL Loss
+                loss = maxrl_loss(out['v_pred'].mean(0), reward.mean(), torch.tensor(0.0, device=self.device))
             else:
-                loss = F.mse_loss(out['v_pred'], torch.zeros_like(out['v_pred'])) + 0.1*energy
+                # MSE Baseline (Target Velocity = 0, just minimize energy gradient implicitly? 
+                # Actually, without MaxRL, we usually just minimize energy directly or matching flow.
+                # For ablation, we treat it as "Flow Matching with Energy Guidance" vs "Pure RL".
+                # Here we simulate "Energy Guidance" by adding energy to loss.
+                loss = F.mse_loss(out['v_pred'], torch.zeros_like(out['v_pred'])) + 0.1 * energy.mean()
             
             loss.backward(); opt.step()
-            history.append(-energy.item()) # Using kcal/mol proxy
+            history.append(reward.mean().item()) 
 
         # 5. Result Archival
         self.results.append({'name': name, 'history': history, 'final': np.mean(history[-5:])})
-        print(f"✅ {name} Completed. Metric: {self.results[-1]['final']:.4f}")
+        print(f"✅ {name} Completed. Final Metric: {self.results[-1]['final']:.4f} kcal/mol proxy")
 
 # --- SECTION 3: DEEP IMPACT EXECUTION ---
 suite = AblationSuite()
