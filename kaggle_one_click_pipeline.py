@@ -85,21 +85,31 @@ try:
     from max_flow.models.flow_matching import RectifiedFlow
     from max_flow.models.backbone import CrossGVP
     from max_flow.inference.verifier import SelfVerifier
-        mol = Chem.RWMol()
-        for a_idx in atom_types:
-            mol.AddAtom(Chem.Atom(int(a_idx.item()) % 90 + 1))
-        conf = Chem.Conformer(len(atom_types))
-        for i, p in enumerate(pos):
-            conf.SetAtomPosition(i, (float(p[0]), float(p[1]), float(p[2])))
-        mol.AddConformer(conf)
-        return mol.GetMol()
+    from max_flow.data.featurizer import FlowData
+    from max_flow.utils.chem import get_mol_from_data
+    from max_flow.utils.metrics import compute_vina_score
+except ImportError:
+    # Essential Fallback Utils for Kaggle Portability
+    if 'get_mol_from_data' not in locals():
+        def get_mol_from_data(data):
+            from rdkit import Chem
+            if not hasattr(data, 'x_L'): return None
+            atom_types = torch.argmax(data.x_L[:, :100], dim=-1)
+            pos = data.pos_L
+            mol = Chem.RWMol()
+            for a_idx in atom_types:
+                mol.AddAtom(Chem.Atom(int(a_idx.item()) % 90 + 1))
+            conf = Chem.Conformer(len(atom_types))
+            for i, p in enumerate(pos):
+                conf.SetAtomPosition(i, (float(p[0]), float(p[1]), float(p[2])))
+            mol.AddConformer(conf)
+            return mol.GetMol()
 
-if 'compute_vina_score' not in locals() or compute_vina_score is None:
-    def compute_vina_score(pos_L, pos_P, data=None):
-        # Simplified proxy for Vina score if real physics engine fails
-        dist = torch.cdist(pos_L, pos_P)
-        min_dist = torch.min(dist, dim=1)[0]
-        return -torch.mean(torch.exp(-min_dist))
+    if 'compute_vina_score' not in locals():
+        def compute_vina_score(pos_L, pos_P, data=None):
+            dist = torch.cdist(pos_L, pos_P)
+            min_dist = torch.min(dist, dim=1)[0]
+            return -torch.mean(torch.exp(-min_dist))
 
 # Fallback FlowData
 if 'FlowData' not in locals():
