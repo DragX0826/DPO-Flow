@@ -17,17 +17,22 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 import torch
-import warnings
-import zipfile
-import shutil
-import math
-warnings.filterwarnings('ignore', category=DeprecationWarning)
-warnings.filterwarnings('ignore', category=UserWarning)
-
-# Silence RDKit
+# Silence RDKit & Matplotlib
 from rdkit import RDLogger, Chem
 from rdkit.Chem import AllChem, Descriptors, QED, Draw
 RDLogger.DisableLog('rdApp.*')
+import warnings
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+warnings.filterwarnings('ignore', category=UserWarning)
+
+# SOTA Fix: Kaggle Font Compatibility (Avoid "Times New Roman not found")
+plt.rcParams['font.family'] = 'sans-serif'
+plt.rcParams['font.sans-serif'] = ['DejaVu Sans', 'Arial', 'Liberation Sans']
+plt.rcParams['axes.unicode_minus'] = False 
+
+import zipfile
+import shutil
+import math
 
 # --- 1. Environment Setup (Auto-install if needed) ---
 print("⚙️ [1/7] Installing Dependencies (Auto-Detecting GPU)...")
@@ -534,7 +539,8 @@ results = {
 df_final = pd.DataFrame(results)
 df_final.to_csv('results_table.csv', index=False)
 with open('results_table.tex', 'w') as f:
-    f.write(df_final.to_latex(index=False, caption="Live Benchmark Results (Authentic Execution)"))
+    # SOTA Fix: Scientific LaTeX precision for publication
+    f.write(df_final.to_latex(index=False, float_format="%.2f", caption="Live Benchmark Results (Authentic Execution)"))
 
 sns.despine()
 # plt.savefig('fig1_speed_accuracy.pdf', bbox_inches='tight') # This line is removed as fig1 is new
