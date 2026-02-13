@@ -185,12 +185,28 @@ def run_absolute_truth_pipeline():
     print("💎 MaxFlow v11.0: The Absolute Truth Pipeline Initializing...")
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # 1. FAIL LOUDLY on Weights
-    weight_path = "maxflow_pretrained.pt"
+    # 1. FAIL LOUDLY on Weights (Robust Discovery)
+    weight_filename = "maxflow_pretrained.pt"
+    weight_path = weight_filename # Default to local
+    
     if not os.path.exists(weight_path):
-        print(f"❌ CRITICAL ERROR: Pre-trained weights '{weight_path}' NOT FOUND.")
-        print("   Scientific Integrity requires a pre-trained base. Access denied.")
-        sys.exit(1)
+        print(f"🔍 Searching for '{weight_filename}' in /kaggle/input/...")
+        found_weights = []
+        for root, dirs, files in os.walk('/kaggle/input'):
+            if weight_filename in files:
+                found_weights.append(os.path.join(root, weight_filename))
+        
+        if found_weights:
+            print(f"✅ Found weights at: {found_weights[0]}")
+            # Symlink to local for easy loading
+            if os.path.exists(weight_filename): os.remove(weight_filename)
+            os.symlink(found_weights[0], weight_filename)
+            print("   -> Symlinked to current directory.")
+        else:
+            print(f"❌ CRITICAL ERROR: '{weight_filename}' NOT FOUND in /kaggle/input/.")
+            print("   Scientific Integrity requires a pre-trained base. Access denied.")
+            print("   [Action]: Please upload 'maxflow_pretrained.pt' to a Kaggle Dataset.")
+            sys.exit(1)
 
     # 2. Load Real Biology (7SMV)
     featurizer = RealPDBFeaturizer()

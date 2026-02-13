@@ -66,6 +66,24 @@ except ImportError as e:
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 warnings.filterwarnings('ignore')
 
+# --- SECTION 1.5: ROBUST WEIGHT DISCOVERY ---
+def find_and_link_weights():
+    target = "maxflow_pretrained.pt"
+    if os.path.exists(target): return # Already here
+    
+    print(f"🔍 Searching for '{target}' in /kaggle/input/...")
+    for root, dirs, files in os.walk('/kaggle/input'):
+        if target in files:
+            found_path = os.path.join(root, target)
+            print(f"✅ Found weights at: {found_path}")
+            os.symlink(found_path, target)
+            print("   -> Symlinked to CWD.")
+            return
+
+    print(f"⚠️ Warning: '{target}' NOT FOUND. Ablation suite may rely on random initialization if not fixed.")
+
+find_and_link_weights()
+
 # --- SECTION 1: SCIENTIFIC UTILITIES ---
 class RealPDBFeaturizer:
     def fetch(self):
