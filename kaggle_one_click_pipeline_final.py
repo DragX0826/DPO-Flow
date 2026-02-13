@@ -297,7 +297,17 @@ def run_absolute_truth_pipeline():
     plt.grid(alpha=0.3); plt.savefig("fig1_final_convergence.pdf")
     
     torch.save(model.state_dict(), "model_final_tta.pt")
-    print("\n🎁 Assets Saved: fig1_final_convergence.pdf, model_final_tta.pt.")
+    
+    # 8. Automatic Bundle (Consistent Output)
+    bundle_name = "maxflow_iclr_v10_bundle.zip"
+    with zipfile.ZipFile(bundle_name, 'w') as zipf:
+        for f in ["fig1_final_convergence.pdf", "model_final_tta.pt"]:
+            if os.path.exists(f):
+                zipf.write(f)
+                print(f"   📦 Packaged: {f}")
+    
+    print(f"\n🎁 OUTPUT READY: {bundle_name}")
+    print("   Download this zip from the Kaggle Output section.")
     print("🏆 High-Integrity Mission Accomplished. Zero fabricated metrics.")
 
 if __name__ == "__main__":
