@@ -337,10 +337,12 @@ model.eval()
 t0_total = time.time()
 inference_times = []
 real_mols = []
-print("   -> Running Sequential Inference (Safe Mode)...")
+
+target_samples = 50 # SOTA Fix: Generate 50 samples for a statistically dense Pareto frontier
+print(f"   -> Running Sequential Inference for {target_samples} molecules...")
 
 try:
-    for i in range(batch_size):
+    for i in range(target_samples):
         # Local batch size 1
         t_batch_start = time.time()
         
