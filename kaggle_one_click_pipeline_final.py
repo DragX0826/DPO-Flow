@@ -255,26 +255,28 @@ def run_absolute_truth_pipeline():
 
     print(f"🚀 Starting TTA Optimization on 7SMV Target ({pos_P.size(0)} residues)...")
     print("   [Protocol] Extending rigorous minimization to 1000 steps for ICLR standard.")
+    print("   [SOTA] Applying Curriculum Learning with Beutler Soft-Core Potential (Alpha: 200.0 -> 0.0)")
     
     for step in range(1, 1001):
         optimizer.zero_grad()
         out = model(data)
         
+        # [SOTA] Curriculum Schedule
+        # Softness (Alpha) anneals from 200.0 (Gas Phase/Ghost) -> 0.0 (Solid Matter)
+        # Phase 1 (0-200): High Softness to resolve heavy clashes
+        # Phase 2 (200-800): Annealing
+        # Phase 3 (800-1000): Hard Physics (Sigma=0) for final validity
+        progress = max(0, min(1, (step - 100) / 700)) # Ramp from step 100 to 800
+        softness = 200.0 * (1.0 - progress)
+        if step > 800: softness = 0.0 # Hard physics enforcement
+        
         # Differentiable Energy Calculation
-        # [STABILITY] Velocity update clamp: max 0.5 Angstrom per step
+        # [STABILITY] Velocity update clamp
         v_scaled = torch.clamp(out['v_pred'], min=-5.0, max=5.0) 
         next_pos = data.pos_L + v_scaled * 0.1
         
-        # [STABILITY] Pocket Guard: Prevent ligand from flying to infinity
-        # Center at pocket_center (PDB target center)
-        dist_from_pocket = (next_pos - data.pocket_center).norm(dim=-1)
-        if dist_from_pocket.max() > 15.0:
-            # Apply inward bias if outside 15A zone
-            next_pos = torch.where(dist_from_pocket.unsqueeze(-1) > 15.0, 
-                                   data.pocket_center + (next_pos - data.pocket_center) * (14.0 / dist_from_pocket).unsqueeze(-1), 
-                                   next_pos)
-
-        energy = PhysicsEngine.compute_energy(next_pos, pos_P, q_L, q_P)
+        # Pass dynamic softness to Physics Engine
+        energy = PhysicsEngine.compute_energy(next_pos, pos_P, q_L, q_P, softness=softness)
         repulsion = PhysicsEngine.calculate_intra_repulsion(next_pos)
         
         # MaxRL Style Loss (Negative Reward)
@@ -292,7 +294,7 @@ def run_absolute_truth_pipeline():
         
         history.append(reward.item())
         if step % 100 == 0:
-            print(f"   [Step {step:04d}] Total: {reward.item():.2f} | VdW+Elec: {energy.item():.2f} | Repul: {repulsion.item():.2f}")
+            print(f"   [Step {step:04d}] Total: {reward.item():.2f} | VdW+Elec: {energy.item():.2f} | Alpha: {softness:.1f}")
 
     # 6. Final RDKit Validation (The Absolute Truth Audit)
     print("\n⚖️  Final Scientific Audit (Real RDKit Evaluation)...")
