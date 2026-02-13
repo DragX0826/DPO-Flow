@@ -1,0 +1,41 @@
+# MaxFlow - GitHub Ignore Pattern
+# ---
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Model Weights (DO NOT UPLOAD LARGE PT FILES)
+*.pt
+*.pth
+*.ckpt
+!maxflow-core/checkpoints/maxflow_pretrained.pt # Allow small demo weight if needed, or keep excluded
+
+# Weights & Large Checkpoints
+maxflow-core/checkpoints/
+
+# Data & Results
+maxflow_results.zip
+maxflow-core/data/*.pdb
+maxflow-core/data/*.csv
+!maxflow-core/data/baselines_results.csv # Keep baselines for demo
+!maxflow-core/data/test_set_split.csv
+
+# Output
+fig*.pdf
+fig*.png
+results_table.tex
+generated_candidates.sdf
+
+# VS Code / IDE
+.vscode/
+.idea/
+.DS_Store
