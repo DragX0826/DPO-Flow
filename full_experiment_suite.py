@@ -169,7 +169,26 @@ plt.tight_layout()
 plt.savefig("fig3_ablation_summary.pdf")
 plt.savefig("fig3_ablation_summary.png", dpi=300)
 
-# --- SECTION 4: DATA ARCHIVAL ---
+# --- SECTION 4: DATA ARCHIVAL & MODEL SAVING ---
+print("\n💾 Archiving Scientific Assets...")
+# 1. Save Final Optimized Model (TTA Weights)
+torch.save({
+    'model_state_dict': model.state_dict(),
+    'ablation_results': suite.results,
+    'timestamp': datetime.now().strftime("%Y%m%d-%H%M%S")
+}, "model_final_tta.pt")
+
+# 2. Save CSV Logs
 df = pd.DataFrame([{'name': r['name'], 'score': r['final']} for r in suite.results])
 df.to_csv("results_ablation.csv", index=False)
-print("\n📦 Scientific Assets Generated: fig3_ablation_summary.pdf, results_ablation.csv.")
+
+# 3. Create Final ICLR Bundle (One-Click)
+bundle_name = "maxflow_iclr_v10_bundle.zip"
+with zipfile.ZipFile(bundle_name, 'w') as zipf:
+    for f in ["fig3_ablation_summary.pdf", "fig1_ab_comparison.pdf", "results_ablation.csv", "model_final_tta.pt"]:
+        if os.path.exists(f):
+            zipf.write(f)
+            print(f"   📦 Added to bundle: {f}")
+
+print(f"\n✅ SUCCESS: Final ICLR Bundle created as '{bundle_name}'.")
+print("🔥 One-Click Process Complete. Download this zip for Reviewer-Ready submission.")
