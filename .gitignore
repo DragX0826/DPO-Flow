@@ -13,11 +13,12 @@ env/
 venv/
 ENV/
 
-# Model Weights (DO NOT UPLOAD LARGE PT FILES)
+# Model Weights
 *.pt
 *.pth
 *.ckpt
-!maxflow-core/checkpoints/maxflow_pretrained.pt # Allow small demo weight if needed, or keep excluded
+!maxflow-core/checkpoints/maxflow_pretrained.pt
+!maxflow_pretrained.pt
 
 # Weights & Large Checkpoints
 maxflow-core/checkpoints/
