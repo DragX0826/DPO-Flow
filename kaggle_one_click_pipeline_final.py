@@ -256,6 +256,7 @@ def run_absolute_truth_pipeline():
     # 4. A/B Test Construction (Fixed Noise)
     torch.manual_seed(42)
     batch_size = 16
+    x_L = torch.randn(batch_size, 167, device=device).detach() 
     # [STABILITY] Initialize Ligand AT THE POCKET CENTER
     # This ensures Soft-Core gradients are felt immediately.
     pocket_center = pos_P.mean(0)
