@@ -7,11 +7,11 @@ from tqdm import tqdm
 from rdkit import Chem
 from torch_geometric.data import Batch
 
-from max_flow.models.backbone import CrossGVP
-from max_flow.models.flow_matching import RectifiedFlow
-from max_flow.utils.metrics import get_mol_from_data, MultiObjectiveScorer
-from max_flow.data.featurizer import FlowData
-from max_flow.data.dataset import collate_fn
+from maxflow.models.backbone import CrossGVP
+from maxflow.models.flow_matching import RectifiedFlow
+from maxflow.utils.metrics import get_mol_from_data, MultiObjectiveScorer
+from maxflow.data.featurizer import FlowData
+from maxflow.data.dataset import collate_fn
 
 def load_universal_engine(checkpoint_path, device='cuda'):
     """

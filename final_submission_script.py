@@ -28,9 +28,9 @@ except ImportError:
 
 # Mount Codebase (Auto-Discovery)
 def auto_setup_path():
-    """Automatically finds the 'max_flow' package and adds it to sys.path"""
+    """Automatically finds the 'maxflow' package and adds it to sys.path"""
     search_roots = ['/kaggle/input', '.', './kaggle_submission']
-    target_pkg = 'max_flow'
+    target_pkg = 'maxflow'
     
     print(f"🔍 Searching for '{target_pkg}' package...")
     for root in search_roots:
@@ -50,19 +50,19 @@ def auto_setup_path():
 auto_setup_path()
 
 try:
-    from max_flow.models.flow_matching import RectifiedFlow
-    from max_flow.models.backbone import CrossGVP
-    from max_flow.inference.verifier import SelfVerifier
-    from max_flow.data.featurizer import FlowData
+    from maxflow.models.flow_matching import RectifiedFlow
+    from maxflow.models.backbone import CrossGVP
+    from maxflow.inference.verifier import SelfVerifier
+    from maxflow.data.featurizer import FlowData
 except ImportError as e:
     print(f"❌ Import Error: {e}")
     # Try local fallback explicit
     sys.path.append('/kaggle/input/maxflow-core')
     try:
-        from max_flow.models.flow_matching import RectifiedFlow
-        from max_flow.models.backbone import CrossGVP
-        from max_flow.inference.verifier import SelfVerifier
-        from max_flow.data.featurizer import FlowData
+        from maxflow.models.flow_matching import RectifiedFlow
+        from maxflow.models.backbone import CrossGVP
+        from maxflow.inference.verifier import SelfVerifier
+        from maxflow.data.featurizer import FlowData
     except ImportError:
         pass
 
@@ -130,7 +130,7 @@ if not os.path.exists(target_pdb):
 # We use PhysicsEngine to ensure we aren't just optimizing Vina scores
 # but also maintaining physical stability (low internal energy).
 try:
-    from max_flow.utils.physics import PhysicsEngine, compute_vdw_energy, compute_electrostatic_energy
+    from maxflow.utils.physics import PhysicsEngine, compute_vdw_energy, compute_electrostatic_energy
     print("   -> Physics Engine Loaded (Energy Stability Check Enabled)")
 except ImportError:
     print("   -> ⚠️ Physics Engine Not Found. Using Rule-Based Verifier Only.")

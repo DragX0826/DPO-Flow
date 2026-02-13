@@ -7,18 +7,18 @@ import time
 from rdkit import Chem
 from rdkit.Chem import Descriptors, QED
 
-# Adjust path to find 'max_flow' or 'dpo_flow' package
+# Adjust path to find 'maxflow' or 'maxflow' package
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 try:
-    from max_flow.models.backbone import CrossGVP
-    from max_flow.models.flow_matching import RectifiedFlow
-    from max_flow.data.featurizer import FlowData
+    from maxflow.models.backbone import CrossGVP
+    from maxflow.models.flow_matching import RectifiedFlow
+    from maxflow.data.featurizer import FlowData
 except ImportError:
     try:
-        from dpo_flow.models.backbone import CrossGVP
-        from dpo_flow.models.flow_matching import RectifiedFlow
-        from dpo_flow.data.featurizer import FlowData
+        from maxflow.models.backbone import CrossGVP
+        from maxflow.models.flow_matching import RectifiedFlow
+        from maxflow.data.featurizer import FlowData
     except ImportError:
         print("⚠️ Core MaxFlow modules not found. Ensure PYTHONPATH is correct.")
 
@@ -90,7 +90,7 @@ def run_retrospective_validation():
         # === REAL INFERENCE LOOP ===
         print(f"   -> Sampling {n_samples} molecules via Mamba-3 Flow...")
         
-        from max_flow.utils.constants import allowable_features
+        from maxflow.utils.constants import allowable_features
         atomic_nums_map = allowable_features['possible_atomic_num_list']
         
         sdf_writer = Chem.SDWriter("generated_candidates.sdf")

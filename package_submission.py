@@ -7,8 +7,8 @@ def package_project():
     print("📦 Starting MaxFlow Submission Packaging (Reproducibility Protocol)...")
     
     # 定義要打包的資料夾與檔案
-    # 這裡確保 max_flow (代碼), checkpoints (模型), data (數據), training_scripts (驗證腳本)
-    targets = ['max_flow', 'checkpoints', 'data', 'training_scripts']
+    # 這裡確保 maxflow (代碼), checkpoints (模型), data (數據), training_scripts (驗證腳本)
+    targets = ['maxflow', 'checkpoints', 'data', 'training_scripts']
     output_filename = 'maxflow-core.zip'
     
     # 檢查必要檔案是否存在 (預設路徑)

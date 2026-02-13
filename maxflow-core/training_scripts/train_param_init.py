@@ -5,13 +5,13 @@ import torch.nn.functional as F
 from torch.optim import AdamW
 import time
 
-# Adjust path to find 'max_flow' package
+# Adjust path to find 'maxflow' package
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from max_flow.models.backbone import CrossGVP
-from max_flow.models.flow_matching import RectifiedFlow
-from max_flow.data.featurizer import FlowData
+from maxflow.models.backbone import CrossGVP
+from maxflow.models.flow_matching import RectifiedFlow
+from maxflow.data.featurizer import FlowData
 
 def fast_pretrain():
     print("🚀 Starting Rapid Pre-training (RF Base)...")

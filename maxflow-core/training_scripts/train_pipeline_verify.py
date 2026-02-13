@@ -6,13 +6,13 @@ import torch.nn.functional as F
 from torch.optim import AdamW
 import time
 
-# Adjust path to find 'max_flow' package
+# Adjust path to find 'maxflow' package
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from max_flow.models.backbone import CrossGVP
-from max_flow.models.flow_matching import RectifiedFlow
-from max_flow.data.featurizer import FlowData
-from max_flow.utils.metrics import compute_vina_score 
+from maxflow.models.backbone import CrossGVP
+from maxflow.models.flow_matching import RectifiedFlow
+from maxflow.data.featurizer import FlowData
+from maxflow.utils.metrics import compute_vina_score 
 
 
 # Configuration for Kaggle Demo (ICLR Phase 3)
@@ -44,7 +44,7 @@ def run_training_verification():
     model.train()
     
     # 3. Optimizer setup (SOTA: Muon)
-    from max_flow.utils.optimization import Muon, compute_grpo_maxrl_loss
+    from maxflow.utils.optimization import Muon, compute_grpo_maxrl_loss
     optimizer = Muon(model.parameters(), lr=0.02, momentum=0.95)
     
     params = sum(p.numel() for p in model.parameters())

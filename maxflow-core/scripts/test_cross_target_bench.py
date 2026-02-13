@@ -6,13 +6,13 @@ import pandas as pd
 from rdkit import Chem
 from rdkit.Chem import Descriptors, QED
 
-# Adjust path to find 'max_flow' package
+# Adjust path to find 'maxflow' package
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 try:
-    from max_flow.models.backbone import CrossGVP
-    from max_flow.models.flow_matching import RectifiedFlow
-    from max_flow.data.featurizer import FlowData
+    from maxflow.models.backbone import CrossGVP
+    from maxflow.models.flow_matching import RectifiedFlow
+    from maxflow.data.featurizer import FlowData
 except ImportError:
     print("⚠️ MaxFlow modules not found. Check PYTHONPATH.")
 

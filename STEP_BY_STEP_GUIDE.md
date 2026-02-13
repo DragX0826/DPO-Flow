@@ -19,7 +19,7 @@ cd d:\Drug\kaggle_submission
 
 ### Step 1.2: 執行打包腳本 (Critical!)
 
-為了避免 Kaggle 路徑錯誤，我們使用專用腳本將 `max_flow` 核心代碼、預訓練權重 (`checkpoints/`) 和 FIP 數據 (`data/`) 按標準結構打包。
+為了避免 Kaggle 路徑錯誤，我們使用專用腳本將 `maxflow` 核心代碼、預訓練權重 (`checkpoints/`) 和 FIP 數據 (`data/`) 按標準結構打包。
 
 **請執行以下指令：**
 
@@ -108,7 +108,7 @@ python plot_validation_results.py
 ### Step 2.3: 掛載核心引擎
 
 1. 點擊 **Add Input** -> 搜尋 `maxflow-core-iclr2026`。
-2. 確認路徑結構：`/kaggle/input/maxflow-core-iclr2026/max_flow/...`。
+2. 確認路徑結構：`/kaggle/input/maxflow-core-iclr2026/maxflow/...`。
 
 ---
 
