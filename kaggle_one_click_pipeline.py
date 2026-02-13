@@ -173,13 +173,14 @@ for step in range(1, 41):
     baseline_adam = 0.9 * baseline_adam + 0.1 * r_a
     loss_a = maxrl_loss(l_a, torch.full((3,), r_a, device=device), baseline_adam)
     opt_adam.zero_grad(); loss_a.backward(); opt_adam.step(); hist_adam.append(r_a.item())
+    if step % 10 == 0: print(f"   [TTA] Step {step:2d} | Energy Reduction: {r_a.item():.4f} kcal/mol (VdW + Elec)")
 
-# Save Fig 1: A/B Convergence
+# Save Fig 1: A/B Convergence (Physical Energy)
 plt.figure(figsize=(10, 5))
-plt.plot(hist_muon, label='Our Stack (MaxRL + Muon)', color='dodgerblue', linewidth=2.5)
+plt.plot(hist_muon, label='MaxFlow (MaxRL + Muon)', color='dodgerblue', linewidth=2.5)
 plt.plot(hist_adam, label='Baseline (MaxRL + AdamW)', color='grey', linestyle='--', alpha=0.8)
-plt.title("ICLR 2026 Fig 1: Accelerator Convergence Comparison (7SMV)", fontsize=13)
-plt.xlabel("Optimization Steps"); plt.ylabel("Binding Affinity Reward")
+plt.title("ICLR 2026 Fig 1: Physical Binding Energy Stabilization (7SMV)", fontsize=13)
+plt.xlabel("Optimization Steps"); plt.ylabel("Physical Binding Energy (kcal/mol proxy)")
 plt.legend(); plt.savefig("fig1_ab_comparison.png", dpi=300); plt.close()
 
 # --- SECTION 6: PHASE 2 (POST-TTA MEASUREMENT) ---
@@ -189,10 +190,10 @@ post_qed, post_aff = get_metrics_batch(model_muon, data_fixed)
 # Save Fig 2: Pareto Shift (Prior vs Optimized)
 plt.figure(figsize=(8, 8))
 if prior_qed: plt.scatter(prior_aff, prior_qed, c='grey', s=60, alpha=0.3, label='Prior Distribution')
-if post_qed: plt.scatter(post_aff, post_qed, c='dodgerblue', s=100, edgecolors='black', alpha=0.8, label='Optimized (TTA)')
+if post_qed: plt.scatter(post_aff, post_qed, c='dodgerblue', s=100, edgecolors='black', alpha=0.8, label='Optimized (Post-TTA)')
 plt.axhline(0.5, color='red', linestyle=':', alpha=0.5, label='High-QED Gate')
 plt.title("ICLR 2026 Fig 2: Honest Pareto Shift (Prior vs Optimized)", fontsize=13)
-plt.xlabel("Binding Affinity (-Energy)"); plt.ylabel("Authentic QED Score")
+plt.xlabel("Physical Binding Energy (kcal/mol)"); plt.ylabel("Authentic QED Score")
 plt.grid(True, alpha=0.1); plt.legend(); plt.savefig("fig2_honest_pareto.png", dpi=300); plt.close()
 
 # --- SECTION 7: FINAL SCIENTIFIC PACKAGE ---
