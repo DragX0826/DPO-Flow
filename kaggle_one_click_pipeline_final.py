@@ -198,6 +198,12 @@ def run_absolute_truth_pipeline():
     print("💎 MaxFlow v11.0: The Absolute Truth Pipeline Initializing...")
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+    # 2. Load Real Biology (7SMV)
+    featurizer = RealPDBFeaturizer()
+    pos_P, x_P = featurizer.parse("7SMV")
+    pos_P, x_P = pos_P.to(device), x_P.to(device)
+    q_P = torch.zeros(pos_P.size(0), device=device) 
+
     # 3. Model Initialization (Double-Branch: Load vs. Genesis)
     model = CrossGVP().to(device)
     weight_path = "maxflow_pretrained.pt"
