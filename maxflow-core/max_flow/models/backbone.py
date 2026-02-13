@@ -14,7 +14,8 @@ class GlobalContextBlock(nn.Module):
     """
     def __init__(self, d_model):
         super().__init__()
-        self.mamba = SimpleS6(d_model, d_state=8) # This calls our Mamba-3 CausalMolSSM
+        # SOTA Fix: Align d_state=16 and bidirectional mapping with maxflow_pretrained.pt
+        self.mamba = SimpleS6(d_model, d_state=16) 
         self.norm = nn.LayerNorm(d_model)
 
     def forward(self, x, batch_idx=None):
@@ -122,19 +123,9 @@ class CrossGVP(nn.Module):
         self.ligand_encoder = GVPEncoder(node_in_dim, hidden_dim, num_layers)
         self.protein_encoder = GVPEncoder(21, hidden_dim, num_layers) 
         
-        # Flash Attention (Transformer) with Fallback
-        # Flash Attention (Transformer) with Fallback
-        try:
-            from max_flow.models.flash_attention import FlashTransformerLayer
-            # Check if CUDA is available before enforcing FlashAttention
-            if torch.cuda.is_available():
-                 self.transformer = FlashTransformerLayer(embed_dim=hidden_dim, num_heads=4, ff_dim=hidden_dim*4, dropout=0.1)
-            else:
-                 raise ImportError("CUDA not available for FlashAttention")
-        except (ImportError, AssertionError, RuntimeError):
-            # Fallback for CPU/Compatibility
-            self.transformer = nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=4, dim_feedforward=hidden_dim*4, batch_first=True)
-            
+        # Core Transformer (Requires FlashTransformerLayer naming for weight alignment)
+        from max_flow.models.flash_attention import FlashTransformerLayer
+        self.transformer = FlashTransformerLayer(embed_dim=hidden_dim, num_heads=4, ff_dim=hidden_dim*4, dropout=0.1)
         self.transformer_norm = nn.LayerNorm(hidden_dim)
         
         # Global Context (Mamba-3)

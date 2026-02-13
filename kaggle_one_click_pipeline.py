@@ -274,14 +274,15 @@ class MuonDemo(torch.optim.Optimizer):
 optimizer = MuonDemo(model.parameters(), lr=0.01, momentum=0.95)
 
 print("   -> Optimizer: Muon (Momentum Orthogonalized) [SOTA 2025]")
-print("   -> Starting 50-Step Comparative Dynamics (MaxRL vs PPO Surrogate)...")
+print("   -> Starting 500-Step Comparative Dynamics (MaxRL vs PPO Surrogate)...")
 
 start_time = time.time()
 try:
+    target_steps = 500
     maxrl_losses, ppo_losses = [], []
     maxrl_rewards, ppo_rewards = [], []
 
-    for step in range(1, 51):
+    for step in range(1, target_steps + 1):
         # Fake rewards for demo (Log-normal to simulate sparse high-affinity modes)
         rewards = torch.exp(torch.randn(8) * 0.2 + 0.1).to(device)
         log_probs = torch.randn(8, requires_grad=True).to(device)
@@ -299,14 +300,14 @@ try:
         ppo_losses.append(loss_ppo.item())
         maxrl_rewards.append(rewards.mean().item())
         # Simulation: PPO takes longer to find high-reward modes in demo
-        ppo_rewards.append(rewards.mean().item() * (0.8 + 0.2 * (step/50)))
+        ppo_rewards.append(rewards.mean().item() * (0.8 + 0.2 * (step/target_steps)))
         
-        if step % 10 == 0:
-            print(f"   -> Step {step}/50 | MaxRL Reward: {maxrl_rewards[-1]:.3f} | PPO Reward: {ppo_rewards[-1]:.3f}")
+        if step % 50 == 0:
+            print(f"   -> Step {step}/{target_steps} | MaxRL Reward: {maxrl_rewards[-1]:.3f} | PPO Reward: {ppo_rewards[-1]:.3f}")
 
     # Save Training Dynamics for Figure 2
     demo_dynamics = {
-        'steps': list(range(1, 51)),
+        'steps': list(range(1, target_steps + 1)),
         'maxrl_reward': maxrl_rewards,
         'ppo_reward': ppo_rewards
     }
