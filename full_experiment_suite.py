@@ -267,7 +267,23 @@ class AblationSuite:
         
         # [SOTA Fix] Pre-trained Weights Loading (v18.20)
         # CRITICAL: If available, load the SOTA weights! Otherwise we are training from scratch.
+        # [SOTA Fix] Pre-trained Weights Loading (v18.20)
+        # CRITICAL: If available, load the SOTA weights! Otherwise we are training from scratch.
         weights_path = "maxflow_pretrained.pt"
+        
+        # [SOTA Robustness] Smart Search in Kaggle Input
+        if not os.path.exists(weights_path):
+            print("🔍 Searching for weights in /kaggle/input...")
+            found = False
+            for root, dirs, files in os.walk("/kaggle/input"):
+                for file in files:
+                    if file.endswith(".pt") and "7SMV" not in file and "shard" not in file:
+                        weights_path = os.path.join(root, file)
+                        print(f"✅ Found potential weights: {weights_path}")
+                        found = True
+                        break
+                if found: break
+        
         if os.path.exists(weights_path):
             try:
                 model.load_state_dict(torch.load(weights_path, map_location=self.device), strict=False)
