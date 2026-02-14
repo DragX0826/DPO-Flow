@@ -430,19 +430,47 @@ class AblationSuite:
             reward = -energy - 0.5 * repulsion - gravity - 1.0 * cohesion - 2.0 * bond_loss + 5.0 * hydro_reward
             
             # Master NaN Check
-            if torch.isnan(reward):
-                reward = torch.tensor(-100.0, device=self.device)
+            # [SOTA Fix] GRPO-Accelerated Differentiable Physics (v18.43)
+            # We combine Differentiable Physics (analytic gradients) with GRPO (Group Relative Policy Optimization).
+            # 1. Calculate Group Advantage (Relative to batch mean)
+            # R is (B,). We want to emphasize samples that are better than average.
+            with torch.no_grad():
+                adv = (reward - reward.mean()) / (reward.std() + 1e-6)
+                # GRPO: Focus on top 50% (positive advantage) or just weight everything?
+                # Weighting everything is standard.
+                # Clip advantages for stability (PPO style)
+                adv = torch.clamp(adv, min=-3.0, max=3.0)
+                
+                # Turn advantage into a positive weight for minimization?
+                # No, standard REINFORCE is E[A * log_prob].
+                # Here we minimize Loss.
+                # Loss ~ - (Advantage * Minimize_Objective)
+                # Minimize_Objective for us is 'reward' (technically energy is minimized, reward maximized).
+                # Wait, 'reward' variable is already maximizing (negative energy).
+                # So we want to maximize Reward.
+                # Gradient should be proportional to Advantage.
             
-            # [SOTA Fix] Differentiable Physics Gradient Flow
-            # CRITICAL: We DO NOT use MaxRL (REINFORCE) here because we have a fully differentiable
-            # physics engine. Passing gradients directly through energy terms is 100x more efficient.
-            # MaxRL (detached reward) is only for black-box rewards (like Docking Score).
-            # Here we minimize Mixed Energy directly.
+            if use_maxrl:
+                # GRPO Loss: - (Advantage * Differentiable_Reward)
+                # If Adv is high, we pull hard on this sample's gradient.
+                # If Adv is low (negative), we push away? 
+                # Or we just assume "Policy Gradient" where log_prob gradient aligns with action.
+                # For Differentiable Physics, we want dR/dx.
+                # Standard SGD: x <- x + lr * dR/dx.
+                # Weighted SGD: x <- x + lr * A * dR/dx.
+                # If A is negative, we move OPPOSITE to the gradient?
+                # That means we actively make "bad" samples WORSE? 
+                # No, that destroys physics.
+                # We should probably only weight by POSITIVE advantage (ReLU) or Softmax.
+                # "Validation" says: Don't break physics.
+                # Implementation: Importance Sampling with Softmax Weights (MaxRL-GRPO)
+                weights = torch.softmax(reward / 1.0, dim=0) * reward.size(0) # Avg weight = 1.0
+                weights = weights.detach()
+                loss = -(weights * reward).mean()
+            else:
+                loss = -reward.mean() 
             
-            # Loss = Minimize Energy = Maximize Reward
-            loss = -reward.mean() 
-            
-            # Optional: Add small regularization if needed
+            # Optional: Add small regularization
             loss = loss + 0.001 * v_pred.pow(2).mean() # Velocity Regularization 
             
             # Gradient Safety
