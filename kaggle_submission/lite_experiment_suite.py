@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v58.3 MaxFlow (ICLR 2026 Golden Calculus Refined - Dims Hardened)"
+VERSION = "v58.4 MaxFlow (ICLR 2026 Golden Calculus Refined - Physics Hardened)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -1619,8 +1619,8 @@ class MaxFlowExperiment:
         q_L = nn.Parameter(torch.randn(B, N, device=device))    
         
         # Ligand Positions (Gaussian Cloud around Pocket)
-        # [v55.4] Precision Funnel Initialization (5.0A noise + contraction)
-        noise = torch.randn(B, N, 3, device=device) * 5.0
+        # [v58.4 Fix] Tighter Funnel Initialization (3.0A noise) for precision alignment
+        noise = torch.randn(B, N, 3, device=device) * 3.0
         pos_L = (p_center.view(1, 1, 3) + noise).detach()
         pos_L.requires_grad = True
         q_L.requires_grad = True
@@ -1852,8 +1852,8 @@ class MaxFlowExperiment:
                 e_bond = self.phys.calculate_internal_geometry_score(pos_L_reshaped) 
                 
                 # Unified Target Velocity Selection
-                # E_total = E_soft + 100*E_hard + 10*E_bond (Refined weights for v58.1)
-                total_energy = e_soft + 100.0 * e_hard + 10.0 * e_bond
+                # E_total = E_soft + 100*E_hard + 100*E_bond (v58.4 Bond Stiffening boost)
+                total_energy = e_soft + 100.0 * e_hard + 100.0 * e_bond
                 # [v58.2] Set create_graph=False as v_target is detached. 
                 force_total = -torch.autograd.grad(total_energy.sum(), pos_L, create_graph=False, retain_graph=True)[0]
                 v_target = force_total.detach()
@@ -1897,8 +1897,11 @@ class MaxFlowExperiment:
                 # [v35.4] v_pred Clipping for geometric stability
                 v_pred = torch.clamp(v_pred, min=-10.0, max=10.0)
                 
-                # [v58.1] Stage-Aware Early Stopping (Balanced Energy monitoring)
-                if current_metric < best_metric - 0.005:
+                # [v58.4 Physics Hardening] Balanced Energy monitoring with mandatory crossing
+                # Forcing the model to run at least 70% of steps to cross the energy barrier
+                if step < (self.config.steps * 0.7):
+                    patience_counter = 0 
+                elif current_metric < best_metric - 0.005:
                     best_metric = current_metric
                     patience_counter = 0
                 else:
