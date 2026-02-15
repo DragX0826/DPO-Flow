@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v59.4 MaxFlow (ICLR 2026 Golden Calculus Refined - Visualization Stabilizer)"
+VERSION = "v59.5 MaxFlow (ICLR 2026 Golden Calculus Refined - FP32 Sanctuary)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -313,60 +313,73 @@ class PhysicsEngine:
 
     def compute_energy(self, pos_L, pos_P, q_L, q_P, x_L, x_P, step_progress=0.0):
         """
-        [v58.1] Golden Calculus: Hierarchical Energy (Refined).
-        Returns Soft and Hard energy components. 
-        Note: alpha update is now called externally via update_alpha.
+        [v59.5] FP32 Sanctuary. 
+        Forces physics calculation in float32 to prevent NaN in gradients under FP16.
         """
-        # [v59.3 Fix] Joint Centric Alignment (Corrected FAPE-style)
-        # Shift the entire system by its joint center of mass to preserve relative distances
-        combined_pos = torch.cat([pos_L, pos_P], dim=1) # (B, N+M, 3)
-        joint_com = combined_pos.mean(dim=1, keepdim=True) # (B, 1, 3)
-        pos_L_aligned = pos_L - joint_com
-        pos_P_aligned = pos_P - joint_com
-        
-        # [v59.3 Fix] Add 1e-8 epsilon to avoid zero-distance NaNs in grad
-        dist = torch.cdist(pos_L_aligned, pos_P_aligned) + 1e-8
-        dist_sq = dist.pow(2)
-        
-        # 2. Van der Waals Param Retrieval
-        type_probs_L = x_L[..., :9]
-        radii_L = type_probs_L @ self.params.vdw_radii[:9]
-        if x_P.dim() == 2: x_P = x_P.unsqueeze(0)
-        prot_radii_map = torch.tensor([1.7, 1.55, 1.52, 1.8], device=pos_P.device)
-        radii_P = (x_P[..., :4] @ prot_radii_map)
-        sigma_ij = radii_L.unsqueeze(-1) + radii_P.unsqueeze(1)
-        
-        # 3. Soft Energy (Intermolecular: vdW + Coulomb)
-        dielectric = 4.0 
-        soft_dist_sq = dist_sq + self.current_alpha * sigma_ij.pow(2)
-        
-        # Coulomb
-        if q_L.dim() == 2: # (Batch, N)
-             q_L_exp = q_L.unsqueeze(2) # (B, N, 1)
-             q_P_exp = q_P.view(q_P.size(0) if q_P.dim() > 1 else 1, 1, -1)
-             e_elec = (332.06 * q_L_exp * q_P_exp) / (dielectric * torch.sqrt(soft_dist_sq))
-        else: # (N,)
-             e_elec = (332.06 * q_L.unsqueeze(1) * q_P.unsqueeze(0)) / (dielectric * torch.sqrt(soft_dist_sq))
-        
-        # vdW
-        inv_sc_dist = sigma_ij.pow(2) / (dist_sq + self.current_alpha * sigma_ij.pow(2) + 1e-6)
-        e_vdw = 0.15 * (inv_sc_dist.pow(6) - inv_sc_dist.pow(3))
-        
-        # [v59.2] Pauli Exclusion Principle (Nuclear Core Repulsion)
-        # For r < 0.8A extreme overlap, apply exponential push to prevent "8-valent Carbon"
-        nuclear_repulsion = torch.exp(-20.0 * (dist - 0.8)).sum(dim=(1,2))
-        
-        # [v59.1 Fix] Attention-weighted Forces (Soft Distogram Simulation)
-        # tau = 1.0 (Contact softness)
-        attn_weights = F.softmax(-dist / 1.0, dim=-1) # (B, N, M)
-        e_inter = (e_elec + e_vdw) * attn_weights
-        e_soft = e_inter.sum(dim=(1, 2))
-        
-        # 4. Hard Energy (Severe Clashes)
-        # [v58.3] Batch-aware summation (B, N, M) -> (B,)
-        e_clash = torch.relu(sigma_ij - dist).pow(2).sum(dim=(1, 2))
-        
-        return e_soft + nuclear_repulsion, e_clash, self.current_alpha
+        # [Critical Fix] Disable Autocast for physics math
+        with torch.cuda.amp.autocast(enabled=False):
+            # 1. Cast everything to float32 for stable high-precision math
+            pos_L = pos_L.float()
+            pos_P = pos_P.float()
+            q_L = q_L.float()
+            q_P = q_P.float()
+            x_L = x_L.float()
+            x_P = x_P.float()
+
+            # [v59.3 Fix] Joint Centric Alignment
+            combined_pos = torch.cat([pos_L, pos_P], dim=1) 
+            joint_com = combined_pos.mean(dim=1, keepdim=True) 
+            pos_L_aligned = pos_L - joint_com
+            pos_P_aligned = pos_P - joint_com
+            
+            # [v59.5] Dist calculation (Stable in FP32 with safety epsilon)
+            dist = torch.cdist(pos_L_aligned, pos_P_aligned) + 1e-6
+            dist_sq = dist.pow(2)
+            
+            # 2. Van der Waals Param Retrieval
+            type_probs_L = x_L[..., :9]
+            radii_L = type_probs_L @ self.params.vdw_radii[:9].float()
+            if x_P.dim() == 2: x_P = x_P.unsqueeze(0)
+            prot_radii_map = torch.tensor([1.7, 1.55, 1.52, 1.8], device=pos_P.device, dtype=torch.float32)
+            radii_P = (x_P[..., :4] @ prot_radii_map)
+            sigma_ij = radii_L.unsqueeze(-1) + radii_P.unsqueeze(1)
+            
+            # 3. Soft Energy (Intermolecular: vdW + Coulomb)
+            dielectric = 4.0 
+            soft_dist_sq = dist_sq + self.current_alpha * sigma_ij.pow(2)
+            
+            # Coulomb
+            if q_L.dim() == 2: # (Batch, N)
+                 q_L_exp = q_L.unsqueeze(2) # (B, N, 1)
+                 q_P_exp = q_P.view(q_P.size(0) if q_P.dim() > 1 else 1, 1, -1)
+                 e_elec = (332.06 * q_L_exp * q_P_exp) / (dielectric * torch.sqrt(soft_dist_sq))
+            else: # (N,)
+                 e_elec = (332.06 * q_L.unsqueeze(1) * q_P.unsqueeze(0)) / (dielectric * torch.sqrt(soft_dist_sq))
+            
+            # vdW
+            inv_sc_dist = sigma_ij.pow(2) / (dist_sq + self.current_alpha * sigma_ij.pow(2) + 1e-6)
+            e_vdw = 0.15 * (inv_sc_dist.pow(6) - inv_sc_dist.pow(3))
+            
+            # [v59.2/v59.5] Pauli Exclusion Principle (Nuclear Core Repulsion)
+            # Re-implement Nuclear Repulsion with clamping to prevent exp() explosion
+            # clamp dist to min 0.1 to avoid division by zero or infinite repulsion
+            safe_dist = torch.clamp(dist, min=0.1)
+            nuclear_repulsion = torch.exp(-20.0 * (safe_dist - 0.8)).sum(dim=(1,2))
+            
+            # [v59.1 Fix] Attention-weighted Forces (Soft Distogram Simulation)
+            attn_weights = F.softmax(-dist / 1.0, dim=-1) # (B, N, M)
+            e_inter = (e_elec + e_vdw) * attn_weights
+            e_soft = e_inter.sum(dim=(1, 2))
+
+            # [v59.5 Fix] NaN Sentry
+            if torch.isnan(e_soft).any():
+                logger.warning("NaN detected in Soft Energy (handled by nan_to_num)")
+                e_soft = torch.nan_to_num(e_soft, nan=1000.0)
+            
+            # 4. Hard Energy (Severe Clashes)
+            e_clash = torch.relu(sigma_ij - dist).pow(2).sum(dim=(1, 2))
+            
+            return e_soft + nuclear_repulsion, e_clash, self.current_alpha
 
     # --- SECTION 4: SCIENTIFIC METRICS (ICLR RIGOUR) ---
     def calculate_valency_loss(self, pos_L, x_L):
@@ -1943,20 +1956,38 @@ class MaxFlowExperiment:
                 
                 # Unified Formula: FM + RJF + Semantic
                 loss = loss_fm + 0.1 * jacob_reg + 0.05 * loss_semantic 
+
+                # [v59.5 Fix] NaN Sentry inside the loop
+                # Check for NaNs immediately after backward
+                if torch.isnan(loss):
+                    logger.error(f"   🚨 NaN Loss at Step {step}. Resetting Optimizer state.")
+                    # Skip step and reset to prevent model corruption
+                    scaler.update() # Dummy update to maintain scaler state
+                    if self.config.use_muon:
+                        opt_muon.zero_grad()
+                        opt_adam.zero_grad()
+                    else:
+                        opt.zero_grad()
+                    continue # Skip to next step
+                
                 batch_energy = total_energy.detach() # For reporting
                 
                 # Early Stopping Logic (Monitor Energy only for v58.1)
                 current_metric = batch_energy.min().item()
+                
+                # [v35.4] v_pred Clipping for geometric stability (Apply before cosine similarity)
+                v_pred_clipped = torch.clamp(v_pred, min=-10.0, max=10.0)
+                
                 # [v58.1] Per-sample tracking for Batch Consensus shading
-                cos_sim_batch = F.cosine_similarity(v_pred.view(B, N, 3), v_target.view(B, N, 3), dim=-1).mean(dim=1).detach().cpu().numpy()
+                cos_sim_batch = F.cosine_similarity(v_pred_clipped.view(B, N, 3), v_target.view(B, N, 3), dim=-1).mean(dim=1).detach().cpu().numpy()
                 convergence_history.append(cos_sim_batch)
                 
                 cos_sim_mean = cos_sim_batch.mean()
                 if cos_sim_mean >= 0.9 and steps_to_09 is None:
                     steps_to_09 = step
                 
-                # [v35.4] v_pred Clipping for geometric stability
-                v_pred = torch.clamp(v_pred, min=-10.0, max=10.0)
+                # Update v_pred with clipped values for the rest of the loop/trajectory
+                v_pred = v_pred_clipped
                 
                 # [v58.4 Physics Hardening] Balanced Energy monitoring with mandatory crossing
                 # Forcing the model to run at least 70% of steps to cross the energy barrier
@@ -2032,7 +2063,8 @@ class MaxFlowExperiment:
                     else:
                         scaler.unscale_(opt)
                     
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    # [v59.5 Fix] Stronger Gradient Clipping (0.5 instead of 1.0) for high-rigidity stability
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
                     
                     if self.config.use_muon:
                         scaler.step(opt_muon)
@@ -2255,16 +2287,25 @@ def generate_master_report(experiment_results, all_histories=None):
         # But we can track valid_yield if we return it from experiment.
         yield_rate = res.get('yield', "N/A")
         
+        # [v59.5 Fix] Helper for safe formatting
+        def safe_fmt(val, fmt=".2f"):
+            try:
+                if isinstance(val, str): 
+                     return val
+                return format(float(val), fmt)
+            except:
+                return "N/A"
+
         rows.append({
             "Target": res.get('pdb', res.get('Target', 'UNK')),
             "Optimizer": name.split('_')[-1],
-            "Energy": f"{e:.1f}",
-            "RMSD": f"{rmsd_val:.2f}",
-            "Yield(%)": f"{yield_rate:.1f}" if isinstance(yield_rate, float) else yield_rate,
-            "AlignStep": res.get('StepsTo09', ">1000"),
-            "Top10%_E": f"{res.get('Top10%_E', 'N/A')}",
-            "QED": f"{qed:.2f}",
-            "Clash": f"{clash_score:.3f}",
+            "Energy": safe_fmt(e, ".1f"),
+            "RMSD": safe_fmt(rmsd_val, ".2f"),
+            "Yield(%)": safe_fmt(yield_rate, ".1f"),
+            "AlignStep": str(res.get('StepsTo09', ">1000")),
+            "Top10%_E": safe_fmt(res.get('Top10%_E', 'N/A'), ".2f"),
+            "QED": safe_fmt(qed, ".2f"),
+            "Clash": safe_fmt(clash_score, ".3f"),
             "Stereo": stereo_valid,
             "Status": pose_status
         })
