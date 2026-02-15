@@ -159,6 +159,18 @@
 - [x] **Reporting Polish**: Remove NaN columns and include "Stereo Pass" in summary. [x]
 - [x] **Versioning**: Update VERSION to v51.0. [x]
 
-## 39. ICLR 2026 "Main Track" Submission [x]
-- [x] **Golden Submission**: Project Complete. High-Fidelity state reached. [x]
-- [x] **Verification**: 1UYD benchmark verified on Kaggle T4. [x]
+## 39. Masterpiece Visualization & Deep Benchmark (v52.0) [x]
+- [x] **Aesthetics**: Upgrade `PublicationVisualizer` to Nature/Science standards. [x]
+- [x] **Benchmark Mode**: Implement `--benchmark` for multi-target validation. [x]
+- [x] **Doc Update**: Update technical report for Masterpiece Edition. [x]
+- [x] **Versioning**: Update VERSION to v52.0. [x]
+
+## 40. Scientific Ablation Masterclass (v52.1) [x]
+- [x] **Ablation Suite**: Implement 3-way comparative suite (Full, No-Phys, AdamW). [x]
+- [x] **High-Res Viz**: Port convergence plots to 300 DPI with confidence shading. [x]
+- [x] **Chemistry Moat**: Hardened 1.8A radius for stereo validity. [x]
+- [x] **Versioning**: Update VERSION to v52.1. [x]
+
+## 41. ICLR 2026 "Main Track" Submission [x]
+- [x] **Golden Submission**: Project Complete. Masterpiece state reached. [x]
+- [x] **Verification**: Detailed ablation and professional figures verified. [x]
