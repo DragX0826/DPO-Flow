@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v53.0 MaxFlow (ICLR 2026 Jacobian-Regularized Soft-Flow)"
+VERSION = "v53.1 MaxFlow (ICLR 2026 Curvature-Adaptive Soft-Flow)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -265,62 +265,71 @@ class PhysicsEngine:
     """
     def __init__(self, ff_params: ForceFieldParameters):
         self.params = ff_params
-        self.alpha_sc = 0.5 # [v53.0] Soft-Core softening parameter
+        # [v53.1] CAH Hyperparameters based on Drifting Theory
+        self.clash_sensitivity = 0.5 # Gamma (Geometric Sensitivity)
 
     # [FIX] Renamed to match call site (compute_energy)
-    def compute_energy(self, pos_L, pos_P, q_L, q_P, x_L, x_P, softness=0.0):
+    def compute_energy(self, pos_L, pos_P, q_L, q_P, x_L, x_P, step_progress=0.0):
         """
-        Computes interaction energy between Ligand (L) and Protein (P).
+        [v53.1] Robust Curvature-Adaptive Hardening (CAH).
+        Fixes scale sensitivity and state synchronization issues.
         """
-        # 1. Pairwise Distances (Batch support handled by caller reshaping)
-        # pos_L: (B, N, 3), pos_P: (M, 3) or (B, M, 3)
+        # 1. Pairwise Distances
         if pos_P.dim() == 2:
-            pos_P = pos_P.unsqueeze(0) # (1, M, 3)
+            pos_P = pos_P.unsqueeze(0)
         
         dist = torch.cdist(pos_L, pos_P)
-        
-        dist = torch.cdist(pos_L, pos_P)
-        
-        # 2. Soft-Core Potential (v53.0 Refactor)
-        # Eliminates hard singularities (1/r^12) by adding alpha_sc to r^2
         dist_sq = dist.pow(2)
-        soft_dist_sq = dist_sq + self.alpha_sc * 1.0 # (B, N, M)
         
-        # 3. Electrostatics (Coulomb)
-        # q_L: (B, N) or (N,), q_P: (M,)
-        # E = k * q1 * q2 / (eps * r)
-        # [v35.2] Hydrophobic Pocket Dielectric (4.0 vs 80.0)
-        # Low dielectric for protein-ligand hydrophobic environment
+        # 2. Van der Waals Param Retrieval (Mixed Rule)
+        type_probs_L = x_L[..., :9]
+        radii_L = type_probs_L @ self.params.vdw_radii[:9]
+        if x_P.dim() == 2: x_P = x_P.unsqueeze(0)
+        prot_radii_map = torch.tensor([1.7, 1.55, 1.52, 1.8], device=pos_P.device)
+        radii_P = (x_P[..., :4] @ prot_radii_map)
+        sigma_ij = radii_L.unsqueeze(-1) + radii_P.unsqueeze(1)
+        
+        # --- CAH Logic Start (v53.1) ---
+        # 3. Normalized Clash Metric (Functional Approach)
+        with torch.no_grad():
+            overlap_mask = dist_sq < sigma_ij.pow(2)
+            if overlap_mask.any():
+                raw_clash = (sigma_ij[overlap_mask].pow(2) / (dist_sq[overlap_mask] + 1e-6))
+                # Mean normalized clash score (Fixes Bug 3: Atomic Scale Sensitivity)
+                avg_clash_score = torch.mean(raw_clash - 1.0)
+            else:
+                avg_clash_score = torch.tensor(0.0, device=dist.device)
+            
+            # 4. Adaptive Alpha Calculation
+            # Linear baseline (保底線)
+            base_alpha = self.params.softness_start * (1.0 - step_progress) + self.params.softness_end * step_progress
+            # Braking factor based on local geometry curvature
+            adaptive_factor = 1.0 + self.clash_sensitivity * avg_clash_score
+            
+            # Final effective alpha (Functional, no internal state for DDP consistency)
+            effective_alpha = torch.clamp(base_alpha * adaptive_factor, 
+                                          min=self.params.softness_end, 
+                                          max=self.params.softness_start)
+        # --- CAH Logic End ---
+
+        # 5. Electrostatics (Coulomb)
         dielectric = 4.0 
+        soft_dist_sq = dist_sq + effective_alpha * sigma_ij.pow(2)
         
         if q_L.dim() == 2: # (Batch, N)
              q_L_exp = q_L.unsqueeze(2) # (B, N, 1)
              q_P_exp = q_P.view(q_P.size(0) if q_P.dim() > 1 else 1, 1, -1)
-             e_elec = (332.06 * q_L_exp * q_P_exp) / (4.0 * torch.sqrt(soft_dist_sq))
+             e_elec = (332.06 * q_L_exp * q_P_exp) / (dielectric * torch.sqrt(soft_dist_sq))
         else: # (N,)
-             e_elec = (332.06 * q_L.unsqueeze(1) * q_P.unsqueeze(0)) / (4.0 * torch.sqrt(soft_dist_sq))
+             e_elec = (332.06 * q_L.unsqueeze(1) * q_P.unsqueeze(0)) / (dielectric * torch.sqrt(soft_dist_sq))
         
-        # 4. Van der Waals (Lennard-Jones)
-        # [v35.7 Fix] Use hard input directly to maintain chemical identity
-        type_probs_L = x_L[..., :9] # Sliced from x_L (hard one-hot)
-        radii_L = type_probs_L @ self.params.vdw_radii[:9] # (B, N) or (N,)
-        
-        if x_P.dim() == 2:
-            x_P = x_P.unsqueeze(0) # (1, M, D)
-            
-        # Protein Radii from x_P (First 4 dims: C, N, O, S)
-        # Type Map: {'C': 1.7, 'N': 1.55, 'O': 1.52, 'S': 1.8}
-        prot_radii_map = torch.tensor([1.7, 1.55, 1.52, 1.8], device=pos_P.device)
-        radii_P = (x_P[..., :4] @ prot_radii_map) # (B, M) or (M,)
-        
-        # Mixing Rule (Arithmetic)
-        # sigma_ij: (B, N, 1) + (1 or B, 1, M) -> (B, N, M)
-        sigma_ij = radii_L.unsqueeze(-1) + radii_P.unsqueeze(1)
-        
-        # Soft-Core LJ Potentials (Nature-grade numerical stability)
-        # term = sigma^2 / (r^2 + alpha*sigma^2)
+        # 6. Soft-Core LJ Potentials
         sc_sigma_sq = sigma_ij.pow(2)
-        inv_sc_dist = sc_sigma_sq / (dist_sq + 0.5 * sc_sigma_sq) 
+        inv_sc_dist = sc_sigma_sq / (dist_sq + effective_alpha * sc_sigma_sq + 1e-6)
+        
+        term_r6 = inv_sc_dist.pow(6)
+        term_r3 = inv_sc_dist.pow(3)
+        e_vdw = 0.15 * (term_r6 - term_r3)
         
         # E = 4 * epsilon * ( (term)^6 - (term)^3 )
         e_vdw = 0.15 * (inv_sc_dist.pow(6) - inv_sc_dist.pow(3))
@@ -1689,9 +1698,9 @@ class MaxFlowExperiment:
                 q_P_batched = q_P_sub.unsqueeze(0).repeat(B, 1)
                 x_P_batched = x_P_sub.unsqueeze(0).repeat(B, 1, 1)
                 
-                # [v38.0] Interactions synchronized with protein slicing (ICLR Rigour)
+                # [v53.1] Interactions synchronized with protein slicing (CAH Adaptive)
                 e_inter = self.phys.compute_energy(pos_L_reshaped, pos_P_batched, q_L_reshaped, q_P_batched, 
-                                                 x_L_for_physics, x_P_batched, softness)
+                                                 x_L_for_physics, x_P_batched, progress)
                 
                 # Internal Energy (Clash) - [v51.0 Moat] Increased to 1.8A for Hi-Fi Chemical Validity
                 dist_in = torch.cdist(pos_L_reshaped, pos_L_reshaped) + torch.eye(N, device=device).unsqueeze(0) * 10
@@ -2309,14 +2318,14 @@ if __name__ == "__main__":
         
         # [AUTOMATION] Package everything for submission
         import zipfile
-        zip_name = f"MaxFlow_v53.0_SoftFlow_Master.zip"
+        zip_name = f"MaxFlow_v53.1_CAH_Adaptive.zip"
         with zipfile.ZipFile(zip_name, "w") as z:
             files_to_zip = [f for f in os.listdir(".") if f.endswith((".pdf", ".pdb", ".tex"))]
             for f in files_to_zip:
                 z.write(f)
             z.write(__file__)
             
-        print(f"\n🏆 MaxFlow v53.0 (ICLR 2026 Soft-Flow Master) Completed.")
+        print(f"\n🏆 MaxFlow v53.1 (ICLR 2026 Soft-Flow Master) Completed.")
         print(f"📦 Submission package created: {zip_name}")
         
     except Exception as e:

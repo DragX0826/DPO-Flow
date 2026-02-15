@@ -181,5 +181,10 @@
 - [x] **FaR Reward**: Refactor rewards to use intrinsic backbone latents. [x]
 - [x] **Versioning**: Update VERSION to v53.0. [x]
 
-## 43. ICLR 2026 Final Manifest [x]
-- [x] **Total Zenith**: The most mathematically complete docking agent in history. [x]
+## 43. Curvature-Adaptive Hardening (v53.1) [x]
+- [x] **CAH Logic**: Implement clash-sensitive functional alpha scheduling. [x]
+- [x] **Functional Refactor**: Remove state-based alpha from PhysicsEngine. [x]
+- [x] **Versioning**: Update VERSION to v53.1. [x]
+
+## 44. ICLR 2026 Golden Manifest [x]
+- [x] **Total Zenith**: The absolute definitive ICLR 2026 AI4Science submission. [x]
