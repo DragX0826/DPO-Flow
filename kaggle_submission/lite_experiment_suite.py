@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v58.6 MaxFlow (ICLR 2026 Golden Calculus Refined - NaN Resilience)"
+VERSION = "v59.1 MaxFlow (ICLR 2026 Golden Calculus Refined - Zenith Zenith)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -308,11 +308,14 @@ class PhysicsEngine:
         Returns Soft and Hard energy components. 
         Note: alpha update is now called externally via update_alpha.
         """
-        # 1. Pairwise Distances
-        if pos_P.dim() == 2:
-            pos_P = pos_P.unsqueeze(0)
+        # [v59.1 Fix] Centric Alignment (FAPE-style)
+        # Shift both to common COM to avoid global jitters while calculating potentials
+        com_L = pos_L.mean(dim=1, keepdim=True) # (B, 1, 3)
+        com_P = pos_P.mean(dim=1, keepdim=True) # (B, 1, 3)
+        pos_L_aligned = pos_L - com_L
+        pos_P_aligned = pos_P - com_P
         
-        dist = torch.cdist(pos_L, pos_P)
+        dist = torch.cdist(pos_L_aligned, pos_P_aligned)
         dist_sq = dist.pow(2)
         
         # 2. Van der Waals Param Retrieval
@@ -339,8 +342,11 @@ class PhysicsEngine:
         inv_sc_dist = sigma_ij.pow(2) / (dist_sq + self.current_alpha * sigma_ij.pow(2) + 1e-6)
         e_vdw = 0.15 * (inv_sc_dist.pow(6) - inv_sc_dist.pow(3))
         
-        # [v58.3] Batch-aware summation (B, N, M) -> (B,)
-        e_soft = (e_elec + e_vdw).sum(dim=(1, 2))
+        # [v59.1 Fix] Attention-weighted Forces (Soft Distogram Simulation)
+        # tau = 1.0 (Contact softness)
+        attn_weights = F.softmax(-dist / 1.0, dim=-1) # (B, N, M)
+        e_inter = (e_elec + e_vdw) * attn_weights
+        e_soft = e_inter.sum(dim=(1, 2))
         
         # 4. Hard Energy (Severe Clashes)
         # [v58.3] Batch-aware summation (B, N, M) -> (B,)
@@ -1803,7 +1809,8 @@ class MaxFlowExperiment:
                     with torch.no_grad():
                         current_p_center = pos_L[0].mean(dim=0)
                         dist_to_p = torch.norm(pos_P - current_p_center, dim=-1)
-                        near_indices = torch.where(dist_to_p < 12.0)[0]
+                        # [v59.0 Fix] Increase search radius to 20.0A for large pocket visibility (3PBL)
+                        near_indices = torch.where(dist_to_p < 20.0)[0]
                         if len(near_indices) < 20: 
                             near_indices = torch.topk(dist_to_p, k=100, largest=False).indices
                         
@@ -1851,13 +1858,26 @@ class MaxFlowExperiment:
                 # Internal Geometry (Bonds & Angles)
                 e_bond = self.phys.calculate_internal_geometry_score(pos_L_reshaped) 
                 
+                # [v59.1 Innovation] 3-Phase Multi-stage Curriculum (Simulating Torsional Constraint)
+                if progress < 0.3:
+                    # Phase 1: Search (Ghost Mode)
+                    w_bond, w_hard = 1.0, 1.0
+                elif progress < 0.7:
+                    # Phase 2: Relax (Induced Fit)
+                    w_bond, w_hard = 100.0, 10.0
+                else:
+                    # Phase 3: Refine (Crystal Rigidity)
+                    w_bond, w_hard = 1000.0, 100.0
+                
                 # Unified Target Velocity Selection
-                # E_total = E_soft + 100*E_hard + 100*E_bond (v58.4 Bond Stiffening boost)
-                total_energy = e_soft + 100.0 * e_hard + 100.0 * e_bond
+                # E_total = E_soft + w_hard*E_hard + w_bond*E_bond
+                total_energy = e_soft + w_hard * e_hard + w_bond * e_bond
+                
                 # [v58.2] Set create_graph=False as v_target is detached. 
                 force_total = -torch.autograd.grad(total_energy.sum(), pos_L, create_graph=False, retain_graph=True)[0]
-                # [v58.6 Fix] Hard-clip v_target to prevent gradient explosion from 100x bond rigidity
-                v_target = torch.clamp(force_total.detach(), -10.0, 10.0)
+                
+                # [v59.1 Fix] Soft-Clipping with Tanh to preserve gradient direction (v59.0)
+                v_target = 10.0 * torch.tanh(force_total.detach() / 10.0)
                 
                 # Update Annealing based on Force Magnitude
                 f_mag = v_target.norm(dim=-1).mean().item()
