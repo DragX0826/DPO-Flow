@@ -90,7 +90,7 @@ def auto_install_deps():
         except Exception as e:
             print(f"⚠️ [AutoInstall] PyG Install Warning: {e}. Continuing without PyG (GVP backbone may downgrade).")
 
-# auto_install_deps() # [v38.0] Explicitly disabled to minimize Kaggle/Server startup overhead
+auto_install_deps() # [v48.6] Re-enabled for maximum Kaggle/Server reliability.
 
 try:
     from rdkit import Chem
