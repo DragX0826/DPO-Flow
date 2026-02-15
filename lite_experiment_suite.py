@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v48.2 MaxFlow (Kaggle-Optimized Golden)"
+VERSION = "v48.3 MaxFlow (Kaggle-Optimized Golden)"
 # [SCALING] ICLR Production Mode logic (controlled via CLI now)
 # Default seed for reproducibility
 torch.manual_seed(2025)
@@ -556,6 +556,9 @@ class RealPDBFeaturizer:
             pocket_center = torch.zeros(3, device=device) # Now the Protein Centroid
             
             return pos_P, x_P, q_P, (pocket_center, pos_native)
+        except Exception as e:
+            logger.warning(f"⚠️ [v48.3] Protein parsing failed: {e}. Falling back to mock data.")
+            return self.mock_data()
     
     def mock_data(self):
         # Fallback for offline testing
