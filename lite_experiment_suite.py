@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v59.1 MaxFlow (ICLR 2026 Golden Calculus Refined - Zenith Zenith)"
+VERSION = "v59.2 MaxFlow (ICLR 2026 Golden Calculus Refined - Stability Patch)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -302,6 +302,15 @@ class PhysicsEngine:
             self.current_alpha = self.current_alpha * (1.0 - decay.item())
             self.current_alpha = max(self.current_alpha, self.params.softness_end)
 
+    def soft_clip_vector(self, v, max_norm=10.0):
+        """
+        [v59.2] Direction-preserving soft clip.
+        Solving the 'Exploding Gradient' problem during stiffness shocks.
+        """
+        norm = v.norm(dim=-1, keepdim=True)
+        scale = (max_norm * torch.tanh(norm / max_norm)) / (norm + 1e-6)
+        return v * scale
+
     def compute_energy(self, pos_L, pos_P, q_L, q_P, x_L, x_P, step_progress=0.0):
         """
         [v58.1] Golden Calculus: Hierarchical Energy (Refined).
@@ -342,6 +351,10 @@ class PhysicsEngine:
         inv_sc_dist = sigma_ij.pow(2) / (dist_sq + self.current_alpha * sigma_ij.pow(2) + 1e-6)
         e_vdw = 0.15 * (inv_sc_dist.pow(6) - inv_sc_dist.pow(3))
         
+        # [v59.2] Pauli Exclusion Principle (Nuclear Core Repulsion)
+        # For r < 0.8A extreme overlap, apply exponential push to prevent "8-valent Carbon"
+        nuclear_repulsion = torch.exp(-20.0 * (dist - 0.8)).sum(dim=(1,2))
+        
         # [v59.1 Fix] Attention-weighted Forces (Soft Distogram Simulation)
         # tau = 1.0 (Contact softness)
         attn_weights = F.softmax(-dist / 1.0, dim=-1) # (B, N, M)
@@ -352,7 +365,7 @@ class PhysicsEngine:
         # [v58.3] Batch-aware summation (B, N, M) -> (B,)
         e_clash = torch.relu(sigma_ij - dist).pow(2).sum(dim=(1, 2))
         
-        return e_soft, e_clash, self.current_alpha
+        return e_soft + nuclear_repulsion, e_clash, self.current_alpha
 
     # --- SECTION 4: SCIENTIFIC METRICS (ICLR RIGOUR) ---
     def calculate_valency_loss(self, pos_L, x_L):
@@ -1777,6 +1790,10 @@ class MaxFlowExperiment:
                             logger.info(f"   🔄 [v55.3] Step 300 Re-noising: Kept {B - mask.sum()} survivors, re-noising {mask.sum()} others...")
                             noise_new = torch.randn(mask.sum(), N, 3, device=device) * 2.0
                             pos_L.data[mask] = p_center.view(1, 1, 3).repeat(mask.sum(), N, 1) + noise_new
+                            
+                            # [v59.2 Fix] Reset Patience to give re-noised samples a chance to resolve transients
+                            patience_counter = 0 
+                            logger.info("   🔄 Patience Reset. Allowing physics to resolve new clashes.")
                 
                 # [v35.7] ICLR PRODUCTION FIX: Initial Step 0 Vector Field
                 if step == 0:
@@ -1876,8 +1893,8 @@ class MaxFlowExperiment:
                 # [v58.2] Set create_graph=False as v_target is detached. 
                 force_total = -torch.autograd.grad(total_energy.sum(), pos_L, create_graph=False, retain_graph=True)[0]
                 
-                # [v59.1 Fix] Soft-Clipping with Tanh to preserve gradient direction (v59.0)
-                v_target = 10.0 * torch.tanh(force_total.detach() / 10.0)
+                # [v59.2 Fix] Use Direction-Preserving Soft-Clip instead of Hard Clamp
+                v_target = self.phys.soft_clip_vector(force_total.detach(), max_norm=20.0)
                 
                 # Update Annealing based on Force Magnitude
                 f_mag = v_target.norm(dim=-1).mean().item()
