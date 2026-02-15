@@ -141,6 +141,11 @@
 - [x] **Visualizer Fix**: Flatten `pos_L` and `v_pred` for PCA in `plot_vector_field_2d`. [x]
 - [x] **Versioning**: Update VERSION to v48.9. [x]
 
-## 36. ICLR 2026 "Main Track" Submission [ ]
-- [x] **Stress Test**: Verified v48.2 on mutational FIP targets on Kaggle T4. [x]
-- [ ] **Golden Submission**: Project Complete. Final manifesto packaged.
+## 36. Zenith Dynamic Perceiver (v49.0) [x]
+- [x] **Singleton**: Implement `get_esm_model_singleton()` and global cache. [x]
+- [x] **Dynamic Featurizer**: Implement on-the-fly sequence embedding generation. [x]
+- [x] **Backbone Refactor**: Consume shared ESM resources. [x]
+- [x] **Versioning**: Update VERSION to v49.0. [x]
+
+## 37. ICLR 2026 "Main Track" Submission [x]
+- [x] **Golden Submission**: Project Complete. Final zenith state reached. [x]

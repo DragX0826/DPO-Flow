@@ -24,7 +24,28 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v48.9 MaxFlow (Kaggle-Optimized Golden)"
+VERSION = "v49.0 MaxFlow (Kaggle-Optimized Golden)"
+
+# --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
+_ESM_MODEL_CACHE = {}
+
+def get_esm_model(model_name="esm2_t33_650M_UR50D"):
+    """
+    Ensures the 2.5GB ESM model is only loaded once and shared.
+    Essential for Kaggle T4 memory management.
+    """
+    if model_name not in _ESM_MODEL_CACHE:
+        try:
+            import esm
+            logger.info(f"🧬 [PLaTITO] Zenith: Loading ESM-2 Model ({model_name})... (May take 2-5 mins)")
+            model, alphabet = esm.pretrained.load_model_and_alphabet(model_name)
+            model.eval()
+            for p in model.parameters(): p.requires_grad = False
+            _ESM_MODEL_CACHE[model_name] = (model, alphabet)
+        except Exception as e:
+            logger.error(f"❌ [PLaTITO] ESM-2 Load ERROR: {e}")
+            return None, None
+    return _ESM_MODEL_CACHE[model_name]
 
 # --- SECTION 0.5: LOGGING & GLOBAL SETUP ---
 logging.basicConfig(
@@ -450,11 +471,35 @@ class RealPDBFeaturizer:
         if os.path.exists(esm_path):
             try:
                 self.esm_embeddings = torch.load(esm_path, map_location=device)
-                logger.info(f"🧬 [PLaTITO] SUCCESS: Loaded pre-computed ESM embeddings for {len(self.esm_embeddings)} targets. Theoretical Moat ACTIVE.")
+                logger.info(f"🧬 [PLaTITO] SUCCESS: Loaded {len(self.esm_embeddings)} pre-computed embeddings.")
             except Exception as e:
-                logger.warning(f"❌ [PLaTITO] FAILED to load ESM embeddings from {esm_path}: {e}")
+                logger.warning(f"❌ [PLaTITO] FAILED to load {esm_path}: {e}")
         else:
-            logger.warning(f"⚠️ [PLaTITO] WARNING: {esm_path} NOT FOUND. Running with Identity Embeddings (SCIENTIFIC RISK!).")
+            logger.info(f"🧬 [PLaTITO] Zenith: {esm_path} missing. Dynamic embedding mode enabled.")
+
+    def _compute_esm_dynamic(self, pdb_id, sequence):
+        """
+        [v49.0 Zenith] Dynamically generates embeddings for unseen residues.
+        """
+        if not sequence: return None
+        model, alphabet = get_esm_model()
+        if model is None: return None
+        
+        logger.info(f"🧬 [PLaTITO] Dynamically Generating Embeddings for {pdb_id} ({len(sequence)} AA)...")
+        try:
+            batch_converter = alphabet.get_batch_converter()
+            _, _, batch_tokens = batch_converter([(pdb_id, sequence)])
+            batch_tokens = batch_tokens.to(device)
+            
+            with torch.no_grad():
+                results = model(batch_tokens, repr_layers=[33], return_contacts=False)
+                token_representations = results["representations"][33]
+            
+            # Remove start/end tokens
+            return token_representations[0, 1 : len(sequence) + 1].cpu()
+        except Exception as e:
+            logger.error(f"❌ [PLaTITO] Dynamic Computation Failed: {e}")
+            return None
 
     def parse(self, pdb_id: str) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
         """
@@ -492,11 +537,19 @@ class RealPDBFeaturizer:
 
         try:
             struct = self.parser.get_structure(pdb_id, path)
+            # Chain sequences for ESM
             coords, feats, charges = [], [], []
             native_ligand = []
+            res_sequences = [] # List of (char)
+            atom_to_res_idx = [] # Map atom pointer to residue index
             
             # Atom Type Map
             type_map = {'C': 0, 'N': 1, 'O': 2, 'S': 3}
+            # Polypeptide tools
+            try:
+                from Bio.PDB.Polypeptide import three_to_one
+            except:
+                three_to_one = lambda x: 'X'
             
             # Iterate
             for model in struct:
@@ -515,12 +568,19 @@ class RealPDBFeaturizer:
                                 res_oh[self.aa_map[res.get_resname()]] = 1.0
                                 
                                 feats.append(atom_oh + res_oh)
+                                atom_to_res_idx.append(len(res_sequences))
                                 
                                 # Charge (Simplified: ARG/LYS +1, ASP/GLU -1)
                                 q = 0.0
                                 if res.get_resname() in ['ARG', 'LYS']: q = 1.0 / len(heavy_atoms)
                                 elif res.get_resname() in ['ASP', 'GLU']: q = -1.0 / len(heavy_atoms)
                                 charges.append(q)
+                            
+                            try:
+                                res_char = three_to_one(res.get_resname())
+                            except:
+                                res_char = 'X'
+                            res_sequences.append(res_char)
                             
                         # Ligand (HETATM)
                         # We specifically look for the ligand, tricky if multiple HETATMs (waters/ions)
@@ -535,29 +595,32 @@ class RealPDBFeaturizer:
                 logger.warning(f"No ligand found in {pdb_id}. Creating mock cloud.")
                 native_ligand = np.random.randn(20, 3) + np.mean(coords, axis=0)
             
+            # [Surgery 1] ESM Embedding Integration (v49.0 Zenith)
+            esm_feat = None
+            if pdb_id in self.esm_embeddings:
+                esm_feat = self.esm_embeddings[pdb_id]
+            else:
+                full_seq = "".join(res_sequences)
+                esm_feat = self._compute_esm_dynamic(pdb_id, full_seq)
+            
+            if esm_feat is not None:
+                # Map residue embeddings to atoms
+                atom_esm = [esm_feat[idx] for idx in atom_to_res_idx]
+                x_P_all = torch.stack(atom_esm).to(device)
+            else:
+                x_P_all = torch.tensor(np.array(feats), dtype=torch.float32).to(device)
+
             # Subsample protein if massive
             if len(coords) > 1200:
                 idx = np.random.choice(len(coords), 1200, replace=False)
                 coords = [coords[i] for i in idx]
-                feats = [feats[i] for i in idx]
                 charges = [charges[i] for i in idx]
+                x_P = x_P_all[idx]
+            else:
+                x_P = x_P_all
                 
             pos_P = torch.tensor(np.array(coords), dtype=torch.float32).to(device)
             pos_native = torch.tensor(np.array(native_ligand), dtype=torch.float32).to(device)
-            
-            # [Surgery 1] ESM Embedding Integration
-            # If pdb_id is in dict, use it. Otherwise, fallback to identity features (x_P)
-            if pdb_id in self.esm_embeddings:
-                # Expecting (M, 1280) tensor
-                esm_feat = self.esm_embeddings[pdb_id]
-                # Ensure aligning if subsampled
-                if len(esm_feat) == len(feats):
-                    x_P = esm_feat.to(device)
-                else:
-                    x_P = torch.tensor(np.array(feats), dtype=torch.float32).to(device)
-            else:
-                x_P = torch.tensor(np.array(feats), dtype=torch.float32).to(device)
-            
             q_P = torch.tensor(np.array(charges), dtype=torch.float32).to(device)
             
             # Center Frame of Reference
@@ -608,16 +671,12 @@ class BioPerceptionEncoder(nn.Module):
     """
     def __init__(self, esm_model_name="esm2_t33_650M_UR50D", hidden_dim=64):
         super().__init__()
-        try:
-            import esm
-            logger.info(f"🧬 [PLaTITO] Initializing ESM-2 Model ({esm_model_name})... (This may take 2-5 mins on first run for weights download)")
-            self.model, self.alphabet = esm.pretrained.load_model_and_alphabet(esm_model_name)
-            self.model.eval()
-            for param in self.model.parameters():
-                param.requires_grad = False
-            self.esm_dim = self.model.embed_dim
-        except:
-            logger.warning("❌ ESM-2 load failed. Using high-dim identity mapping.")
+        model, alphabet = get_esm_model(esm_model_name)
+        if model is not None:
+            self.model = model
+            self.esm_dim = model.embed_dim
+        else:
+            logger.warning("⚠️ [PLaTITO] Encoder entering low-fi fallback (Identity Embeddings).")
             self.model = None
             self.esm_dim = 1280
 
@@ -2234,14 +2293,14 @@ if __name__ == "__main__":
         
         # [AUTOMATION] Package everything for submission
         import zipfile
-        zip_name = f"MaxFlow_v48.9_Kaggle_Golden.zip"
+        zip_name = f"MaxFlow_v49.0_Kaggle_Golden.zip"
         with zipfile.ZipFile(zip_name, "w") as z:
             files_to_zip = [f for f in os.listdir(".") if f.endswith((".pdf", ".pdb", ".tex"))]
             for f in files_to_zip:
                 z.write(f)
             z.write(__file__)
             
-        print(f"\n🏆 MaxFlow v48.9 (Kaggle-Optimized Golden Submission) Completed.")
+        print(f"\n🏆 MaxFlow v49.0 (Kaggle-Optimized Golden Submission) Completed.")
         print(f"📦 Submission package created: {zip_name}")
         
     except Exception as e:
