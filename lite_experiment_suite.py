@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v57.1 MaxFlow (ICLR 2026 Robust Scientific Pinnacle Edition)"
+VERSION = "v58.1 MaxFlow (ICLR 2026 Golden Calculus Refined)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -274,28 +274,39 @@ class PhysicsEngine:
     """
     def __init__(self, ff_params: ForceFieldParameters):
         self.params = ff_params
-        # [v56.0] PID-Controlled Hardening (Flexible Evolution)
+        # [v58.1] Golden Calculus: Force-Magnitude Annealing
         self.current_alpha = self.params.softness_start
-        self.hardening_rate = 0.1 # Base rate
-        
-        # PID Controller State
-        self.integral_error = 0.0 # Clash Debt
-        self.prev_error = 0.0     # Error derivative
-        self.kp = 0.5             # Proportional Gain
-        self.ki = 0.05            # Integral Gain
-        self.kd = 0.05            # [v56.0] Derivative Gain for prediction
+        self.hardening_rate = 0.1 
+        self.max_force_ema = 1.0 # [v58.1] Normalize decay rate
 
     def reset_state(self):
-        """Reset PID controller state for new trajectory."""
+        """Reset state for new trajectory (v58.1)."""
         self.current_alpha = self.params.softness_start
-        self.integral_error = 0.0
-        self.prev_error = 0.0
+        self.max_force_ema = 1.0
 
-    # [FIX] Renamed to match call site (compute_energy)
+    def update_alpha(self, force_magnitude):
+        """
+        [v58.1] Adapt alpha based on gradient magnitude.
+        High force = Stay soft to resolve. Low force = Harden for precision.
+        """
+        with torch.no_grad():
+            self.max_force_ema = 0.99 * self.max_force_ema + 0.01 * force_magnitude
+            norm_force = force_magnitude / (self.max_force_ema + 1e-8)
+            norm_force = torch.clamp(torch.tensor(norm_force), 0.0, 1.0)
+            # sigmoid(5 * (x - 0.5)) -> 0.5 at midpoint. 
+            # If norm_force is small, decay is small -> hardening speeds up? 
+            # Wait, high force should SLOW DOWN hardening.
+            # sigmoid(5 * (0.5 - norm_force)) -> high force (norm=1) -> sigmoid(-2.5) -> small decay.
+            # low force (norm=0) -> sigmoid(2.5) -> high decay -> hardening accelerates.
+            decay = self.hardening_rate * torch.sigmoid(5.0 * (0.5 - norm_force))
+            self.current_alpha = self.current_alpha * (1.0 - decay.item())
+            self.current_alpha = max(self.current_alpha, self.params.softness_end)
+
     def compute_energy(self, pos_L, pos_P, q_L, q_P, x_L, x_P, step_progress=0.0):
         """
-        [v54.1] PI-Controlled Curvature-Adaptive Hardening.
-        Handles physical singularites via a feedback loop.
+        [v58.1] Golden Calculus: Hierarchical Energy (Refined).
+        Returns Soft and Hard energy components. 
+        Note: alpha update is now called externally via update_alpha.
         """
         # 1. Pairwise Distances
         if pos_P.dim() == 2:
@@ -312,48 +323,11 @@ class PhysicsEngine:
         radii_P = (x_P[..., :4] @ prot_radii_map)
         sigma_ij = radii_L.unsqueeze(-1) + radii_P.unsqueeze(1)
         
-        # --- v54.1 PI-Controlled CAH Logic ---
-        with torch.no_grad():
-            # Error Signal: Normalized Clash Score (Intensive Property)
-            overlap_mask = dist_sq < sigma_ij.pow(2)
-            if overlap_mask.any():
-                raw_clash = (sigma_ij[overlap_mask].pow(2) / (dist_sq[overlap_mask] + 1e-6))
-                error_signal = torch.mean(raw_clash - 1.0)
-            else:
-                error_signal = torch.tensor(0.0, device=dist.device)
-
-            # PID Control Law
-        # [v56.0] Predictive PI: Added derivative term to anticipate collisions
-        error_dot = (error_signal - self.prev_error)
-        p_term = self.kp * error_signal
-        self.integral_error = 0.9 * self.integral_error + 0.1 * error_signal
-        i_term = self.ki * self.integral_error
-        d_term = self.kd * error_dot
-        self.prev_error = error_signal
-        
-        # Braking Factor
-        braking = 1.0 + p_term + i_term + d_term
-        braking = torch.clamp(braking, min=0.1, max=10.0) 
-        
-        # [v56.0] Energy-Driven Hardening: Rate depends on gradient norm / signal
-        # Lower force = softer evolution; High clash = slow down hardening.
-        adaptive_rate = self.hardening_rate * torch.sigmoid(error_signal + 1e-4)
-        decay = adaptive_rate / braking
-        
-        # [Safety Override] Softened for v55.4
-        if step_progress > 0.8:
-            decay = decay * (1.0 + 2.0 * (step_progress - 0.8))
-        
-        # Update Alpha State
-        self.current_alpha = self.current_alpha * (1.0 - decay)
-        self.current_alpha = max(self.current_alpha, self.params.softness_end)
-            
-        # --- End PI Logic ---
-
-        # 3. Electrostatics (Coulomb)
+        # 3. Soft Energy (Intermolecular: vdW + Coulomb)
         dielectric = 4.0 
         soft_dist_sq = dist_sq + self.current_alpha * sigma_ij.pow(2)
         
+        # Coulomb
         if q_L.dim() == 2: # (Batch, N)
              q_L_exp = q_L.unsqueeze(2) # (B, N, 1)
              q_P_exp = q_P.view(q_P.size(0) if q_P.dim() > 1 else 1, 1, -1)
@@ -361,14 +335,16 @@ class PhysicsEngine:
         else: # (N,)
              e_elec = (332.06 * q_L.unsqueeze(1) * q_P.unsqueeze(0)) / (dielectric * torch.sqrt(soft_dist_sq))
         
-        # 4. Van der Waals (Soft-Core LJ)
+        # vdW
         inv_sc_dist = sigma_ij.pow(2) / (dist_sq + self.current_alpha * sigma_ij.pow(2) + 1e-6)
+        e_vdw = 0.15 * (inv_sc_dist.pow(6) - inv_sc_dist.pow(3))
         
-        term_r6 = inv_sc_dist.pow(6)
-        term_r3 = inv_sc_dist.pow(3)
-        e_vdw = 0.15 * (term_r6 - term_r3)
+        e_soft = (e_elec + e_vdw).sum()
         
-        return e_elec + e_vdw
+        # 4. Hard Energy (Severe Clashes)
+        e_clash = torch.relu(sigma_ij - dist).pow(2).sum()
+        
+        return e_soft, e_clash, self.current_alpha
 
     # --- SECTION 4: SCIENTIFIC METRICS (ICLR RIGOUR) ---
     def calculate_valency_loss(self, pos_L, x_L):
@@ -389,40 +365,6 @@ class PhysicsEngine:
         valency_mse = (neighbors - target_valency).pow(2).mean()
         return valency_mse
 
-    def calculate_kabsch_rmsd(self, pos_L, pos_native):
-        """
-        Differentiable Kabsch-RMSD (Kabsch, 1976).
-        Aligns two point clouds by translation and rotation to minimize RMSD.
-        pos_L: (B, N, 3), pos_native: (N, 3)
-        """
-        B, N, _ = pos_L.shape
-        pos_native = pos_native.unsqueeze(0).repeat(B, 1, 1).to(pos_L.device)
-        
-        # 1. Centering
-        c_L = pos_L.mean(dim=1, keepdim=True)
-        c_N = pos_native.mean(dim=1, keepdim=True)
-        P = pos_L - c_L
-        Q = pos_native - c_N
-        
-        # 2. Covariance Matrix
-        H = torch.matmul(P.transpose(-1, -2), Q)
-        
-        # 3. SVD for Rotation Matrix
-        try:
-            U, S, V = torch.svd(H)
-            d = torch.det(torch.matmul(V, U.transpose(-1, -2)))
-            e = torch.eye(3, device=pos_L.device).unsqueeze(0).repeat(B, 1, 1)
-            e[:, 2, 2] = torch.sign(d)
-            R = torch.matmul(V, torch.matmul(e, U.transpose(-1, -2)))
-            
-            # 4. Alignment
-            P_aligned = torch.matmul(P, R.transpose(-1, -2))
-            rmsd = torch.sqrt(torch.mean((P_aligned - Q).pow(2), dim=(1, 2)))
-        except:
-            # Fallback to simple Euclidean RMSD if SVD fails (rare but possible in singularities)
-            rmsd = torch.sqrt(torch.mean((P - Q).pow(2), dim=(1, 2)))
-            
-        return rmsd
 
     def calculate_internal_geometry_score(self, pos_L):
         """
@@ -1023,12 +965,6 @@ class MaxFlowBackbone(nn.Module):
             nn.Linear(hidden_dim, hidden_dim),
             nn.LayerNorm(hidden_dim)
         )
-        
-        # [v53.0 Soft-Flow] Features as Rewards (FaR)
-        # We project latents onto a learned "Safety Direction" theta_safe.
-        # This replaces the external MLP fa_probe, ensuring end-to-end consistency.
-        self.theta_safe = nn.Parameter(torch.randn(hidden_dim))
-        nn.init.orthogonal_(self.theta_safe.unsqueeze(0))
 
     def forward(self, data, t, pos_L, x_P, pos_P):
         # [v48.7 Hotfix] Consistently flatten ligand inputs to (B*N, ...)
@@ -1090,9 +1026,6 @@ class MaxFlowBackbone(nn.Module):
         # 6. RJF Prediction (Manifold Geodesic)
         v_pred = self.rjf_head(s)
         
-        # 7. FaR: Features as Rewards (v53.0)
-        # Internal reward signal derived from latent alignment.
-        valency_score = torch.matmul(s, self.theta_safe)
         
         # 8. FB Representation
         z_fb = self.fb_head(s)
@@ -1100,7 +1033,6 @@ class MaxFlowBackbone(nn.Module):
         return {
             'v_pred': v_pred,
             'z_fb': z_fb,
-            'valency': valency_score,
             'latent': s
         }
 
@@ -1586,6 +1518,41 @@ class MaxFlowExperiment:
         self.visualizer = PublicationVisualizer()
         self.results = []
         
+    def calculate_kabsch_rmsd(self, pos_L, pos_native):
+        """
+        Differentiable Kabsch-RMSD (Kabsch, 1976).
+        Aligns two point clouds by translation and rotation to minimize RMSD.
+        pos_L: (B, N, 3), pos_native: (N, 3)
+        """
+        B, N, _ = pos_L.shape
+        pos_native = pos_native.unsqueeze(0).repeat(B, 1, 1).to(pos_L.device)
+        
+        # 1. Centering
+        c_L = pos_L.mean(dim=1, keepdim=True)
+        c_N = pos_native.mean(dim=1, keepdim=True)
+        P = pos_L - c_L
+        Q = pos_native - c_N
+        
+        # 2. Covariance Matrix
+        H = torch.matmul(P.transpose(-1, -2), Q)
+        
+        # 3. SVD for Rotation Matrix
+        try:
+            U, S, V = torch.svd(H)
+            d = torch.det(torch.matmul(V, U.transpose(-1, -2)))
+            e = torch.eye(3, device=pos_L.device).unsqueeze(0).repeat(B, 1, 1)
+            e[:, 2, 2] = torch.sign(d)
+            R = torch.matmul(V, torch.matmul(e, U.transpose(-1, -2)))
+            
+            # 4. Alignment
+            P_aligned = torch.matmul(P, R.transpose(-1, -2))
+            rmsd = torch.sqrt(torch.mean((P_aligned - Q).pow(2), dim=(1, 2)))
+        except:
+            # Fallback to simple Euclidean RMSD if SVD fails (rare but possible in singularities)
+            rmsd = torch.sqrt(torch.mean((P - Q).pow(2), dim=(1, 2)))
+            
+        return rmsd
+
     def export_pymol_script(self, pos_L, pos_native, pdb_id, filename="view_results.pml"):
         """
         [v57.0] Automated PyMOL script generation for 3D overlays.
@@ -1717,20 +1684,18 @@ class MaxFlowExperiment:
         patience_counter = 0
         MAX_PATIENCE = 50
         
-        # [v57.1] Initialize Dynamic KNN Scope
-        pos_P_sub = pos_P[:200]
-        x_P_sub = x_P[:200]
-        q_P_sub = q_P[:200]
+        # [v58.1] Initialize KNN Scope before the loop (Prevent NameError)
+        pos_P_sub, x_P_sub, q_P_sub = pos_P[:200], x_P[:200], q_P[:200]
         
-        # [v57.1.1 Hotfix] Scientific Polish: ESM-feature driven initialization for x_L
+        # [v58.0] Golden Calculus: ESM-Semantic Anchor initialization
         with torch.no_grad():
-            x_P_batched = x_P.unsqueeze(0).repeat(B, 1, 1)
-            # Use cross-attention or simple projection to warm-up x_L
-            context_h = backbone.perception(x_P_batched).mean(dim=1, keepdim=True).repeat(1, N, 1)
-            # [v57.1.1 Fix] Aligned 64-dim context with 167-dim x_L via zero-padding
+            x_P_batched_anchor = x_P.unsqueeze(0).repeat(B, 1, 1)
+            # Use perception to get biological anchor for semantic consistency
+            esm_anchor = backbone.perception(x_P_batched_anchor).mean(dim=1, keepdim=True).detach() # (B, 1, H)
+            # Pre-warm x_L (Biological Warm-up)
             context_projected = torch.zeros(B, N, D, device=device)
-            context_projected[..., :context_h.shape[-1]] = context_h
-            x_L.data.add_(context_projected * 0.1) # Add protein context to random noise
+            context_projected[..., :esm_anchor.shape[-1]] = esm_anchor.repeat(1, N, 1)
+            x_L.data.add_(context_projected * 0.1)
         
         # [v48.0] Standardized Batch Logic: (B, N, D)
         # We no longer flatten to B*N in the optimizer to avoid view mismatch
@@ -1827,22 +1792,23 @@ class MaxFlowExperiment:
                 
                 data.x_L = x_L_final.view(-1, D) # Model expects flattended (B*N, D)
                 
-                # [v57.0] Dynamic KNN Pocket Slicing (Environmental Awareness)
-                # Re-slice protein atoms every 50 steps based on ligand heartland
+                # [v58.0] Initial Scope
+                if step == 0:
+                    pos_P_sub, x_P_sub, q_P_sub = pos_P[:200], x_P[:200], q_P[:200]
+
+                # [v57.0] Dynamic KNN Pocket Slicing
                 if (step % 50 == 0 or step == 0) and step < self.config.steps - 1:
                     with torch.no_grad():
-                        # [v57.1] Precision Centroid: Use first batch for representative slicing
                         current_p_center = pos_L[0].mean(dim=0)
                         dist_to_p = torch.norm(pos_P - current_p_center, dim=-1)
-                        # Atomic neighborhood 12A (ICLR Gold Standard)
                         near_indices = torch.where(dist_to_p < 12.0)[0]
-                        if len(near_indices) < 20: # Fallback floor
+                        if len(near_indices) < 20: 
                             near_indices = torch.topk(dist_to_p, k=100, largest=False).indices
                         
-                        pos_P_sub = pos_P[near_indices]
-                        x_P_sub = x_P[near_indices]
-                        q_P_sub = q_P[near_indices]
-                        logger.info(f"   🌊 [Dynamic KNN] Sliced {len(near_indices)} protein atoms around centroid.")
+                        pos_P_sub = pos_P[near_indices].detach().clone()
+                        x_P_sub = x_P[near_indices].detach().clone()
+                        q_P_sub = q_P[near_indices].detach().clone()
+                        logger.info(f"   🌊 [Dynamic KNN] Sliced {len(near_indices)} atoms.")
 
                 # Flow Field Prediction
                 t_input = torch.full((B,), progress, device=device)
@@ -1850,17 +1816,9 @@ class MaxFlowExperiment:
                 pos_L_flat = pos_L.view(-1, 3)
                 out = model(data, t=t_input, pos_L=pos_L_flat, x_P=x_P_sub, pos_P=pos_P_sub)
                 v_pred = out['v_pred'].view(B, N, 3)
-                s_current = out['latent']
-                valency_score = out['valency']
+                s_current = out['latent'] # [v58.1] Extracted correctly
                 
-                # [Surgery 6] ΔBelief: Reward for Information Acquisition
-                intrinsic_reward = torch.zeros(B, device=device)
-                if s_prev_ema is not None:
-                     # Calculate KL/Change in belief (normalized)
-                     belief_change = (s_current - s_prev_ema).pow(2).mean(dim=-1)
-                     intrinsic_reward = belief_change.view(B, N).mean(dim=1)
-                
-                # EMA Update - [v48.9] Explicitly DETACH to prevent cross-batch graph growth
+                # EMA Update for tracking (Diagnostic Only)
                 s_prev_ema = 0.9 * (s_prev_ema if s_prev_ema is not None else s_current.detach()) + 0.1 * s_current.detach()
                 
                 # [v35.7] Evolution Trilogy: Save mid-point vector field
@@ -1875,169 +1833,54 @@ class MaxFlowExperiment:
                     out_ref = model_ref(data, t=t_input, pos_L=pos_L_flat_ref, x_P=x_P_sub, pos_P=pos_P_sub)
                     v_ref = out_ref['v_pred'].view(B, N, 3) 
                 
-                # Energy Calculation
+                # [v58.1] Refined Golden Triangle: Unified Force Target
                 pos_L_reshaped = pos_L # (B, N, 3)
-                q_L_reshaped = q_L # (B, N)
-                
-                # [v48.1 Stability Hotfix] x_L_for_physics (Straight-Through consistency)
                 x_L_for_physics = x_L_final.view(B, N, -1)
-                
-                # [v38.0] Correct Dimensional Alignment for Physics Engine
                 pos_P_batched = pos_P_sub.unsqueeze(0).repeat(B, 1, 1)
                 q_P_batched = q_P_sub.unsqueeze(0).repeat(B, 1)
                 x_P_batched = x_P_sub.unsqueeze(0).repeat(B, 1, 1)
                 
-                # [v53.1] Interactions synchronized with protein slicing (CAH Adaptive)
-                e_inter = self.phys.compute_energy(pos_L_reshaped, pos_P_batched, q_L_reshaped, q_P_batched, 
-                                                 x_L_for_physics, x_P_batched, progress)
+                # Hierarchical Engine Call
+                e_soft, e_hard, alpha = self.phys.compute_energy(pos_L_reshaped, pos_P_batched, q_L, q_P_batched, 
+                                                               x_L_for_physics, x_P_batched, progress)
                 
-                # Internal Energy (Clash) - [v51.0 Moat] Increased to 1.8A for Hi-Fi Chemical Validity
-                dist_in = torch.cdist(pos_L_reshaped, pos_L_reshaped) + torch.eye(N, device=device).unsqueeze(0) * 10
-                e_intra = torch.relu(1.8 - dist_in).pow(2).sum(dim=(1,2))
+                # Internal Geometry (Bonds & Angles)
+                e_bond = self.phys.calculate_internal_geometry_score(pos_L_reshaped) 
                 
-                # Constraint (Pocket Center)
-                e_confine = (pos_L_reshaped.mean(1) - p_center).norm(dim=1) * 10.0
+                # Unified Target Velocity Selection
+                # E_total = E_soft + 100*E_hard + 10*E_bond (Refined weights for v58.1)
+                total_energy = e_soft + 100.0 * e_hard + 10.0 * e_bond
+                force_total = -torch.autograd.grad(total_energy.sum(), pos_L, create_graph=True, retain_graph=True)[0]
+                v_target = force_total.detach()
                 
-                # [FIX] Robust Energy Summation for Batched Pairs
-                if e_inter.ndim == 3:
-                    e_inter_sum = e_inter.sum(dim=(1, 2))
-                elif e_inter.ndim == 2:
-                    e_inter_sum = e_inter.sum(dim=1)
-                else:
-                    e_inter_sum = e_inter
-                    
-                # [v46.0 Expert Integrity] Real Physical Potentials
-                e_bond = self.phys.calculate_internal_geometry_score(pos_L_reshaped)
-                e_hydro = self.phys.calculate_hydrophobic_score(pos_L_reshaped, x_L_for_physics, pos_P_batched, x_P_batched)
+                # Update Annealing based on Force Magnitude
+                f_mag = v_target.norm(dim=-1).mean().item()
+                self.phys.update_alpha(f_mag)
                 
-                # [v57.0] Kabsch-RMSD Supervision (Phase 1)
-                # Differentiable alignment against crystal structure to guide early search
-                rmsd_loss = self.calculate_kabsch_rmsd(pos_L_reshaped, pos_native)
+                # The Golden Triangle Loss
+                # Pillar 1: Physics-Flow Matching
+                loss_fm = (v_pred - v_target).pow(2).mean()
                 
-                # [v57.0] Two-Stage Training Logic
-                # Phase 1: Heavy supervision to cross the energy desert
-                # Phase 2: Relax supervision to allow physics-driven docking equilibrium
-                if step < 500:
-                    sup_weight = 1.0 - (step / 500.0)
-                else:
-                    sup_weight = 0.0
-                
-                # Gradually introduce protein-ligand interactions (e_inter)
-                warm_up = min(1.0, ((step - 100) / 50.0)) if step < 150 else 1.0
-                batch_energy = (e_inter_sum + e_bond - 0.5 * e_hydro) * warm_up + e_intra + e_confine
-                
-                # [v56.0] Anchor Alignment Reward (Chemical Sanity)
-                # Proximity to ESM-prior anchor in latent space
-                with torch.no_grad():
-                    # [v56.1 Hotfix] Reshape s_current (B*N, H) to (B, N, H) before mean
-                    s_current_mean = s_current.view(B, N, -1).mean(dim=1) # (B, hidden_dim)
-                    anchor_reward = -torch.norm(s_current_mean - esm_anchor, dim=-1) # (B,)
-                
-                # [v57.0] Valency & Chemical Validity
-                valency_loss = self.phys.calculate_valency_loss(pos_L_reshaped, x_L_for_physics)
-                
-                # [v57.0] Adaptive PID Gains (Time-Coupling)
-                # Early exploration (kp=0.5), late rigidity (kp=2.0)
-                self.phys.kp = 0.5 + 1.5 * progress
-                self.phys.ki = 0.05 + 0.1 * progress
-                self.phys.kd = 0.05 + 0.1 * progress
-                
-                # [v34.1] GRPO-MaxRL: Advantage-Weighted Flow Matching
-                # 1. Target Force from Physics
-                # [v53.0 Soft-Flow] Deep Physics Gradient (No Clamping)
-                force = -torch.autograd.grad(batch_energy.sum(), pos_L, create_graph=False, retain_graph=True)[0]
-                force = force.detach()
-                
-                # [v56.2] Explicitly calculate distance for kernel-smoothed drift
-                dist_sq = torch.cdist(pos_L_reshaped, pos_P_batched).pow(2) # (B, N, M)
-                
-                # [v56.0] Kernel-Smoothed Drift (Gaussian Smoothing for Singularities)
-                # Prevents "5-valent carbon" and explosive repulsive forces
-                sigma_smooth = 0.5 * softness # adaptive kernel width
-                # [v56.3 Hotfix] dist_sq.mean(dim=-1) is (B, N), unsqueeze(-1) makes it (B, N, 1)
-                kernel_weight = torch.exp(-dist_sq.mean(dim=-1).unsqueeze(-1) / (2 * sigma_smooth**2 + 1e-6))
-                # force is (B, N, 3), kernel_weight is (B, N, 1) - Correct broadcasting
-                force = force * kernel_weight
-                
-                torch.nan_to_num_(force, nan=0.0)
-                
-                # [Surgery 6 & 7] Composite Reward (Physical + ΔBelief + Interpretable Features)
-                # rewards = -Physical Energy + intrinsic + interpretable probes
-                rewards = -batch_energy.detach() 
-                rewards = rewards + 0.2 * intrinsic_reward # ΔBelief: reward exploration/information
-                rewards = rewards + 0.1 * anchor_reward.detach() # [v56.0] Anchor Alignment
-                
-                # [STABILIZER] Numerical Stability Constant (Not Variance Reduction)
-                rewards = torch.clamp(rewards, min=-100.0, max=100.0)
-                
-                # [POLISH] Sample Efficiency Tracking
-                min_R = -rewards.max().item() # rewards = -energy
-                if min_R < -7.0 and steps_to_7 is None:
-                    steps_to_7 = step
-                
-                # [Surgery 8] DINA-LRM: Noise-Calibrated Temperature Clipping
-                # Uncertainty scales with noise (progress t)
-                dina_tau = maxrl_tau * (1.0 + progress) # Noise-calibrated comparison uncertainty
-                
-                R_std = torch.clamp(rewards.std(), min=0.1)
-                log_weights = (rewards - rewards.max()) / (R_std * dina_tau)
-                log_weights = torch.clamp(log_weights, min=-20.0, max=20.0)
-                exp_weights = torch.exp(log_weights)
-                
-                # [v47.0 Oral Upgrade] DINA-LRM: Noise-Calibrated Physics Confidence
-                # Uncertainty is a function of noise (t) and physical sanity (E_intra).
-                # If the molecule is clashing internally (high E_intra), we ignore 
-                # binding rewards and focus on internal resolution.
-                physical_confidence = torch.sigmoid(-e_intra / (softness + 1e-6))
-                
-                # Composite weights: DINA (Progress based) * Physical Confidence
-                weights = (exp_weights / (exp_weights.sum() + 1e-10)) * B
-                weights = weights * physical_confidence.detach()
-                
-                # [POLISH] Effective Batch Size Monitoring
-                # N_eff = (sum w)^2 / sum w^2
-                n_eff = weights.sum().pow(2) / weights.pow(2).sum()
-                if n_eff < 2.0:
-                    # [Dynamic Temp] Boost temp if collapsing to one sample
-                     maxrl_tau = maxrl_tau * 1.05
-                
-                if getattr(self.config, 'use_grpo', True) and not self.config.no_grpo:
-                    # M-Step: Weighted Regression
-                    # We reshape the manifold to prioritizing high-reward regions
-                    pass
-                else:
-                    weights = torch.ones_like(weights)
-                
-                # 3. Energy-Conditioned Flow Matching Loss (Non-Linear Fusion)
-                # [v44.0] Sigmoid Barrier Logic
-                # f(E) = sigmoid( (E - E_threshold) / scale )
-                # Prioritizes "Collision Avoidance" at singularities.
-                energy_norm = batch_energy.detach() 
-                collision_barrier = torch.sigmoid((energy_norm - 50.0) / 10.0)
-                
-                loss_per_sample = (v_pred.view(B, N, 3) - force.view(B, N, 3)).pow(2).mean(dim=(1,2))
-                loss_fm = ((1.0 + 5.0 * collision_barrier) * weights * loss_per_sample).mean()
-                
-                # [v45.0] One-step FB Representation Loss (Zheng et al., Feb 11, 2026)
-                # Justifies the "Universal DTI Prior" by predicting future latent consensus.
-                # Simplified representation alignment: ||Z(s) - Z(s')||
-                loss_fb = torch.zeros(1, device=device)
-                if s_prev_ema is not None and self.config.mode == "train":
-                    loss_fb = (s_current - s_prev_ema.detach()).pow(2).mean()
-                
-                # [v56.0] Jacobi Regularization (RJF) - Boosted for Flexible Flow
+                # Pillar 2: Geometric Smoothing (RJF)
                 jacob_reg = torch.zeros(1, device=device)
-                if getattr(self.config, 'use_jacobi', True) and step % 2 == 0:
+                if step % 2 == 0:
                     eps = torch.randn_like(pos_L)
                     v_dot_eps = (v_pred * eps).sum()
                     v_jp = torch.autograd.grad(v_dot_eps, pos_L, create_graph=True, retain_graph=True)[0]
                     jacob_reg = v_jp.pow(2).mean()
                 
-                # Final loss (v57.0 Scientific Pinnacle)
-                # FM + Jacobi + One-step FB + [NEW] Kabsch Supervision + Valency
-                loss = loss_fm + 0.1 * jacob_reg + 0.1 * loss_fb + 5.0 * sup_weight * rmsd_loss.mean() + 1.0 * valency_loss
-                # [v35.4] Per-sample tracking for Batch Consensus shading
-                cos_sim_batch = F.cosine_similarity(v_pred.view(B, N, 3), force.view(B, N, 3), dim=-1).mean(dim=1).detach().cpu().numpy()
+                # Pillar 3: Semantic Anchoring [v58.1 Fix Shape]
+                s_mean = s_current.view(B, N, -1).mean(dim=1) # (B, H)
+                loss_semantic = (s_mean - esm_anchor.view(B, -1)).pow(2).mean()
+                
+                # Unified Formula: FM + RJF + Semantic
+                loss = loss_fm + 0.1 * jacob_reg + 0.05 * loss_semantic 
+                batch_energy = total_energy.detach() # For reporting
+                
+                # Early Stopping Logic (Monitor Energy only for v58.1)
+                current_metric = batch_energy.min().item()
+                # [v58.1] Per-sample tracking for Batch Consensus shading
+                cos_sim_batch = F.cosine_similarity(v_pred.view(B, N, 3), v_target.view(B, N, 3), dim=-1).mean(dim=1).detach().cpu().numpy()
                 convergence_history.append(cos_sim_batch)
                 
                 cos_sim_mean = cos_sim_batch.mean()
@@ -2047,19 +1890,20 @@ class MaxFlowExperiment:
                 # [v35.4] v_pred Clipping for geometric stability
                 v_pred = torch.clamp(v_pred, min=-10.0, max=10.0)
                 
-                # [FIX] Ensure weights and loss match shapes for dot product
-                # weights: (B,), loss_per_sample: (B,)
-                flow_loss = (weights * loss_per_sample).mean()
+                # [v58.1] Stage-Aware Early Stopping (Balanced Energy monitoring)
+                if current_metric < best_metric - 0.005:
+                    best_metric = current_metric
+                    patience_counter = 0
+                else:
+                    patience_counter += 1
+                    
+                if patience_counter >= MAX_PATIENCE:
+                    logger.info(f"   🛑 Early Stopping at step {step} (Converged at {best_metric:.2f})")
+                    break
                 
-                # [POLISH] Entropy Regularization (Prevent Mode Collapse)
-                # Maximize entropy -> Minimize negative entropy
-                entropy = -(weights * log_weights).sum() / B
-                # [KL] KL-Divergence Loss (v_pred vs v_ref)
-                kl_loss = (v_pred - v_ref).pow(2).mean() if getattr(self.config, 'use_kl', True) else torch.tensor(0.0, device=device)
-                
-                # [v35.9] Trilogy Fix: Select Sample with BEST energy for snapshot (argmin)
-                # This ensures consistent atom indexing in subplots
+                # [v58.1] Selection logic for Visualization
                 best_idx = batch_energy.argmin().item()
+                
                 if step == 0:
                     self.step0_v = v_pred[best_idx].detach().cpu().numpy()
                     self.step0_pos = pos_L_reshaped[best_idx].detach().cpu().numpy()
@@ -2092,40 +1936,13 @@ class MaxFlowExperiment:
                             p_center, filename=f"fig1_trilogy_{self.config.target_name}.pdf"
                         )
                 
-                # [v48.0 Master Clean] Unified Step Reporting
+                # [v58.0] Master Clean Reporting
                 if step % 50 == 0:
-                    logger.info(f"   Step {step:03d} | E: {batch_energy.mean().item():.2f} | KL: {kl_loss.item():.4f} | tau: {maxrl_tau:.3f}")
+                    logger.info(f"   Step {step:03d} | E: {batch_energy.mean().item():.2f} | Alpha: {alpha:.3f} | FM: {loss_fm.item():.4f}")
                 
-                # [v55.4] Periodic Auto-Checkpoint (PDB-Specific)
-                if step > 0 and step % 100 == 0:
-                    ckpt_path = f"maxflow_ckpt_{self.config.pdb_id}.pt"
-                    logger.info(f"💾 [Segmented Training] Saving intermediate checkpoint at step {step}...")
-                    torch.save({
-                        'step': step,
-                        'pos_L': pos_L.data,
-                        'q_L': q_L.data,
-                        'x_L': x_L.data,
-                        'VERSION': VERSION
-                    }, ckpt_path)
-                
+                # Trajectory updates handled by unified Drifting Field
                 if self.config.mode == "inference":
-                    # Trajectory updates now handled by Drifting Field in Section 3 Loop
-                    pass
-                
-                    loss = torch.tensor(0.0, device=device).requires_grad_(True)
-                else:
-                    # [Surgery 5] One-Step FB Loss: Enforce universal representation consistency
-                    # [v48.2] Clarified mapping for future batching robustness
-                    rewards_per_atom = rewards[data.batch].unsqueeze(-1) # (B*N, 1)
-                    loss_fb = (out['z_fb'] - rewards_per_atom).pow(2).mean()
-                    
-                    # Total Loss (Ablation: No Physics)
-                    if self.config.no_physics:
-                         loss = 10.0 * flow_loss + self.config.kl_beta * kl_loss + 0.1 * loss_fb
-                    else:
-                         # [Surgery 2] Use combined RJF Loss (FM + Jacobi)
-                         # [Surgery 5] Add FB Regularization
-                         loss = batch_energy.mean() + 10.0 * loss + self.config.kl_beta * kl_loss + 0.1 * loss_fb
+                     loss = torch.tensor(0.0, device=device).requires_grad_(True)
             
             if self.config.mode != "inference":
                 # [AMP] Scaled Backward with Gradient Accumulation
@@ -2162,7 +1979,7 @@ class MaxFlowExperiment:
                         
                         # Calculate Physics Residual Drift: u_t = (Force - Neural Prediction)
                         # This steers the trajectory towards the physical manifold.
-                        current_drift = force.view(B, N, 3).detach() - v_pred.detach()
+                        current_drift = v_target.view(B, N, 3).detach() - v_pred.detach()
                         
                         # Smooth Drifting Field update (EMA)
                         drifting_field = 0.9 * drifting_field + 0.1 * current_drift
@@ -2176,27 +1993,15 @@ class MaxFlowExperiment:
                 
                 # [STABILITY] Early Stopping
             
-            # [v57.1] Stage-Aware Early Stopping
-            # Phase 1: Heavy supervision -> Monitor RMSD
-            # Phase 2: Physical relaxation -> Monitor Energy
-            current_metric = rmsd_loss.min().item() if step < 500 else batch_energy.min().item()
-            
-            if current_metric < best_metric - 0.005:
-                best_metric = current_metric
-                patience_counter = 0
-            else:
-                patience_counter += 1
-                
-            if patience_counter >= MAX_PATIENCE:
-                logger.info(f"   🛑 Early Stopping at step {step} (Converged at {best_metric:.3f})")
-                break
-                
-            # Keep log
+            # Keep log (v58.1)
             if step % 10 == 0:
                 history_E.append(loss.item())
                 if step % 100 == 0:
                     e_min = batch_energy.min().item()
-                    logger.info(f"   Step {step}: Loss={loss.item():.2f}, E_min={e_min:.2f}, Metric={current_metric:.2f}, Temp={temp:.2f}")
+                    logger.info(f"   Step {step}: Loss={loss.item():.2f}, E_min={e_min:.2f}, Alpha={alpha:.3f}")
+
+            # [v58.1] Rewards definition for reporting
+            rewards = -batch_energy.detach()
 
         # 4. Final Processing & Metrics
         best_idx = batch_energy.argmin()
@@ -2417,8 +2222,8 @@ def generate_master_report(experiment_results, all_histories=None):
         if all_histories:
             viz.plot_convergence_overlay(all_histories, filename="fig1a_ablation.pdf")
         
-        print(f"\n🚀 --- MAXFLOW {VERSION} ICLR HIGH-FIDELITY SUMMARY ---")
-        print("   Accelerated Target-Specific Molecular Docking via PI-Drift Flow Matching")
+        print(f"\n🚀 --- MAXFLOW {VERSION} ICLR SUMMARY ---")
+        print("   Accelerated Target-Specific Molecular Docking via Semantic-Anchored Flow Matching")
         print(df_final.to_string(index=False))
     except Exception as e:
         logger.error(f"⚠️ Report Generation Failed: {e}")
@@ -2563,14 +2368,14 @@ if __name__ == "__main__":
         
         # [AUTOMATION] Package everything for submission
         import zipfile
-        zip_name = f"MaxFlow_{VERSION.split(' ')[0]}_Scientific_Pinnacle.zip"
+        zip_name = f"MaxFlow_{VERSION.split(' ')[0]}_Golden_Calculus.zip"
         with zipfile.ZipFile(zip_name, "w") as z:
             files_to_zip = [f for f in os.listdir(".") if f.endswith((".pdf", ".pdb", ".tex", ".pml"))]
             for f in files_to_zip:
                 z.write(f)
             z.write(__file__)
             
-        print(f"\n🏆 {VERSION} Completed.")
+        print(f"\n🏆 {VERSION} Completed (Mathematical Dimensional Reduction).")
         print(f"📦 Submission package created: {zip_name}")
         
     except Exception as e:
