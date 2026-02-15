@@ -1,7 +1,7 @@
 # MaxFlow: Bio-Geometric Agentic Flow for Accelerated Drug Discovery
 
-**Version**: MaxFlow ICLR 2026 Oral Edition (v50.1 - Zenith-Oral)  
-**Strategic Focus**: Physics-Informed Drifting Flow & Global Resilience  
+**Version**: MaxFlow ICLR 2026 High-Fidelity Edition (v51.0 - Golden)  
+**Strategic Focus**: High-Fidelity Data & Scientific Success  
 
 ---
 
@@ -88,7 +88,7 @@ To address the real-world constraints of hardware (e.g., Kaggle T4's 9-hour limi
 | **Optimization** | Disentangled | *Muon Matrices / AdamW Geometry* |
 
 ## 12. Submission Impact
-| Metric | Stitched Models | **MaxFlow Agent (v50.1)** | ICLR 2026 Expectation |
+| Metric | Stitched Models | **MaxFlow Agent (v51.0)** | ICLR 2026 Expectation |
 | --- | --- | --- | --- |
 | **Logic** | Implicit | **Evolution-Guided** | High Bio-Insight |
 | **Path** | Static Flow | **Energy-Conditioned** | SOTA Flow Dynamics |

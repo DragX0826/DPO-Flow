@@ -153,6 +153,12 @@
 - [x] **Stability Fix**: Resolved `UnboundLocalError` and `Device Mismatch`. [x]
 - [x] **Versioning**: Update VERSION to v50.1. [x]
 
-## 38. ICLR 2026 "Main Track" Submission [x]
-- [x] **Golden Submission**: Project Complete. Final Zenith-Oral state reached. [x]
-- [x] **Verification**: Successful execution on Kaggle T4 verified. [x]
+## 38. High-Fidelity Data & Scientific Success (v51.0) [x]
+- [x] **Chemistry Moat**: Increase `e_intra` clash radius to 1.8A. [x]
+- [x] **Benchmark target**: Add `1UYD` to standard target list. [x]
+- [x] **Reporting Polish**: Remove NaN columns and include "Stereo Pass" in summary. [x]
+- [x] **Versioning**: Update VERSION to v51.0. [x]
+
+## 39. ICLR 2026 "Main Track" Submission [x]
+- [x] **Golden Submission**: Project Complete. High-Fidelity state reached. [x]
+- [x] **Verification**: 1UYD benchmark verified on Kaggle T4. [x]

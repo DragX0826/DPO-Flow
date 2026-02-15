@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v50.1 MaxFlow (ICLR 2026 Oral Edition - Stability Fix)"
+VERSION = "v51.0 MaxFlow (ICLR 2026 High-Fidelity Edition)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -1668,9 +1668,9 @@ class MaxFlowExperiment:
                 e_inter = self.phys.compute_energy(pos_L_reshaped, pos_P_batched, q_L_reshaped, q_P_batched, 
                                                  x_L_for_physics, x_P_batched, softness)
                 
-                # Internal Energy (Clash)
+                # Internal Energy (Clash) - [v51.0 Moat] Increased to 1.8A for Hi-Fi Chemical Validity
                 dist_in = torch.cdist(pos_L_reshaped, pos_L_reshaped) + torch.eye(N, device=device).unsqueeze(0) * 10
-                e_intra = torch.relu(1.5 - dist_in).pow(2).sum(dim=(1,2))
+                e_intra = torch.relu(1.8 - dist_in).pow(2).sum(dim=(1,2))
                 
                 # Constraint (Pocket Center)
                 e_confine = (pos_L_reshaped.mean(1) - p_center).norm(dim=1) * 10.0
@@ -2131,7 +2131,8 @@ def generate_master_report(experiment_results, all_histories=None):
         if not df.empty and 'Target' in df.columns:
             df['Target'] = df['Target'].apply(lambda x: x if x in ["7SMV", "3PBL", "5R8T"] else f"{x} (Custom)")
         
-        df_final = df
+        # [v51.0 High-Fidelity] Clean NaN-free Reporting
+        df_final = df.dropna(axis=1, how='all')
         
         # [POLISH] Generate Pareto Frontier Plot
         viz = PublicationVisualizer()
@@ -2142,9 +2143,9 @@ def generate_master_report(experiment_results, all_histories=None):
         if all_histories:
             viz.plot_convergence_overlay(all_histories, filename="fig1a_ablation.pdf")
         
-        print("\n🚀 --- HELIX-FLOW (TTO) ICLR WORKSHOP SPRINT (v35.8) ---")
-        print("   Accelerated Target-Specific Molecular Docking via Physics-Distilled Mamba-3")
-        print(df_final)
+        print(f"\n🚀 --- MAXFLOW {VERSION} ICLR HIGH-FIDELITY SUMMARY ---")
+        print("   Accelerated Target-Specific Molecular Docking via PI-Drift Flow Matching")
+        print(df_final.to_string(index=False))
     except Exception as e:
         logger.error(f"⚠️ Report Generation Failed: {e}")
         import traceback
@@ -2230,7 +2231,7 @@ def run_scaling_benchmark():
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description=f"MaxFlow {VERSION} ICLR Suite")
-    parser.add_argument("--targets", nargs="+", default=["7SMV", "3PBL", "1AQ1", "5R8T"])
+    parser.add_argument("--target", type=str, default="1UYD", help="Target PDB ID (e.g., 1UYD, 7SMV, 3PBL, 5R8T)")
     parser.add_argument("--steps", type=int, default=100) # [v40.0] High-flux validation default
     parser.add_argument("--batch", type=int, default=32)  # [v40.0] High-flux validation default
     parser.add_argument("--mutation_rate", type=float, default=0.0, help="Mutation rate for resilience benchmarking")
@@ -2244,7 +2245,7 @@ if __name__ == "__main__":
 
     all_results = []
     all_histories = {} # [v35.9] Collect histories for Fig 1a Overlay
-    targets_to_run = args.targets
+    targets_to_run = [args.target]
     
     if args.ablation:
         configs = [
@@ -2301,14 +2302,14 @@ if __name__ == "__main__":
         
         # [AUTOMATION] Package everything for submission
         import zipfile
-        zip_name = f"MaxFlow_v50.1_ICLR_Oral.zip"
+        zip_name = f"MaxFlow_v51.0_ICLR_HiFi.zip"
         with zipfile.ZipFile(zip_name, "w") as z:
             files_to_zip = [f for f in os.listdir(".") if f.endswith((".pdf", ".pdb", ".tex"))]
             for f in files_to_zip:
                 z.write(f)
             z.write(__file__)
             
-        print(f"\n🏆 MaxFlow v50.1 (ICLR 2026 Oral Edition) Completed.")
+        print(f"\n🏆 MaxFlow v51.0 (ICLR 2026 High-Fidelity Edition) Completed.")
         print(f"📦 Submission package created: {zip_name}")
         
     except Exception as e:
