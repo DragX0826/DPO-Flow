@@ -127,6 +127,11 @@
 - [x] **Initialization Fix**: Move `logger` setup before resilient imports (SECTION 0.5). [x]
 - [x] **Versioning**: Update VERSION to v48.6 (Kaggle-Optimized). [x]
 
-## 33. ICLR 2026 "Main Track" Submission [ ]
+## 33. Tensor Shape Hotfix (v48.7) [x]
+- [x] **Backbone Fix**: Flatten `pos_L` and `data.x_L` at entry point of `MaxFlowBackbone.forward`. [x]
+- [x] **Broadcasting Fix**: Ensure time-embeddings match flattened atom clusters. [x]
+- [x] **Versioning**: Update VERSION to v48.7 (Kaggle-Optimized). [x]
+
+## 34. ICLR 2026 "Main Track" Submission [ ]
 - [x] **Stress Test**: Verified v48.2 on mutational FIP targets on Kaggle T4. [x]
 - [ ] **Golden Submission**: Project Complete. Final manifesto packaged.

@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v48.6 MaxFlow (Kaggle-Optimized Golden)"
+VERSION = "v48.7 MaxFlow (Kaggle-Optimized Golden)"
 
 # --- SECTION 0.5: LOGGING & GLOBAL SETUP ---
 logging.basicConfig(
@@ -866,6 +866,17 @@ class MaxFlowBackbone(nn.Module):
         )
 
     def forward(self, data, t, pos_L, x_P, pos_P):
+        # [v48.7 Hotfix] Consistently flatten ligand inputs to (B*N, ...)
+        # This aligns with data.batch (B*N,) and avoids broadcasting errors.
+        if pos_L.dim() == 3:
+            B_lvl, N_lvl, _ = pos_L.shape
+            pos_L = pos_L.reshape(B_lvl * N_lvl, 3)
+        
+        x_L_flat = data.x_L
+        if x_L_flat.dim() == 3:
+            B_lvl, N_lvl, D_lvl = x_L_flat.shape
+            x_L_flat = x_L_flat.reshape(B_lvl * N_lvl, D_lvl)
+
         # [v35.9] Protein Atom Capping
         n_p_limit = min(200, pos_P.size(0))
         pos_P = pos_P[:n_p_limit]
@@ -876,7 +887,7 @@ class MaxFlowBackbone(nn.Module):
         h_P = self.proj_P(h_P)
         
         # 2. Embedding & Time
-        x = self.embedding(data.x_L)
+        x = self.embedding(x_L_flat)
         x = self.ln(x)
         t_emb = self.time_mlp(t)
         x = x + t_emb[data.batch]
@@ -886,7 +897,7 @@ class MaxFlowBackbone(nn.Module):
         x = self.cross_attn(x, h_P, dist_lp)
         
         # 4. GVP Interaction (SE(3) Equivariance)
-        v_in = pos_L.unsqueeze(1).unsqueeze(2) # (B*N, 1, 1, 3)
+        v_in = pos_L.unsqueeze(1) # (B*N, 1, 3) - [v48.7] Consistent with GVP(si, 1)
         s_in = x
         
         for layer in self.gvp_layers:
@@ -2221,14 +2232,14 @@ if __name__ == "__main__":
         
         # [AUTOMATION] Package everything for submission
         import zipfile
-        zip_name = f"MaxFlow_v48.6_Kaggle_Golden.zip"
+        zip_name = f"MaxFlow_v48.7_Kaggle_Golden.zip"
         with zipfile.ZipFile(zip_name, "w") as z:
             files_to_zip = [f for f in os.listdir(".") if f.endswith((".pdf", ".pdb", ".tex"))]
             for f in files_to_zip:
                 z.write(f)
             z.write(__file__)
             
-        print(f"\n🏆 MaxFlow v48.6 (Kaggle-Optimized Golden Submission) Completed.")
+        print(f"\n🏆 MaxFlow v48.7 (Kaggle-Optimized Golden Submission) Completed.")
         print(f"📦 Submission package created: {zip_name}")
         
     except Exception as e:

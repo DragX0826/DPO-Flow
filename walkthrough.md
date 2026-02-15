@@ -1,6 +1,6 @@
-# MaxFlow Walkthrough: Kaggle-Optimized Golden Submission (v48.6)
+# MaxFlow Walkthrough: Kaggle-Optimized Golden Submission (v48.7)
 
-This document verifies the ultimate architectural and theoretical hardening of the **MaxFlow** agent, specifically aimed at **ICLR 2026 Oral** grade status. v48.6 introduces **Initialization Stability** for seamless cloud execution.
+This document verifies the ultimate architectural and theoretical hardening of the **MaxFlow** agent, specifically aimed at **ICLR 2026 Oral** grade status. v48.7 introduces **Tensor Shape Integrity** for complex batched execution.
 
 ## 1. Visual Polish (Champion Pose Rendering)
 We have ensured all 2D and 3D visualizers show the "Champion Pose" accurately.
@@ -16,12 +16,12 @@ We have optimized MaxFlow for the reality of 2026 Kaggle T4 quotas (9-hour limit
 - **Segmented Training**: Auto-checkpointing logic (`maxflow_ckpt.pt`) allows the model to save progress every 100 steps and resume automatically if a session is interrupted.
 - **Throughput Optimization**: Standardized defaults to **300 steps** and **16 batch size**, maximizing VRAM utilization while ensuring session completion within the 9-hour window.
 
-## 4. Initialization Stability (v48.6 Hotfix)
-We have optimized the startup sequence for cloud environments.
-- **Initialization Order**: Fixed `NameError: logger` by moving the reporting setup to the top of the file.
-- **Auto-Install Persistence**: Re-enabled `auto_install_deps()` to handle environments like Kaggle where pre-installed packages may drift or be missing across kernel restarts.
+## 4. Tensor Shape Integrity (v48.7 Hotfix)
+We have resolved a critical shape mismatch that occurred when running with multiple batches (Genesis Phase).
+- **Flattened Flow**: All ligand inputs (`pos_L`, `x_L`) are now consistently flattened to `(B*N, ...)` at the backbone entry point.
+- **Broadcasting Fix**: Time-embeddings are now added to flattened feature clusters using `data.batch`, preventing the (118 vs 1888) dimension mismatch.
 
-## 5. Stability Hotfixes (Legacy)
+## 5. Initialization Stability (Legacy)
 - **Reference Model Realignment**: Corrected `pos_L` flattening for model evaluation and restored `v_ref` shape.
 - **Physics ST-Consistency**: Unified the use of `x_L_final` (Straight-Through Estimator) across the physics engine.
 
@@ -32,10 +32,10 @@ We have optimized the startup sequence for cloud environments.
 
 ---
 
-### Final Golden Submission Checklist (v48.6)
+### Final Golden Submission Checklist (v48.7)
+- [x] **Tensor Integrity**: Resolved batch-dimension broadcasting mismatch.
 - [x] **Initialization Fix**: Resolved `NameError: logger` in startup sequence.
 - [x] **Auto-Install Active**: `auto_install_deps()` guarantees library presence.
-- [x] **Visual Polish Active**: Champion-pose slicing for all plots verified.
-- [x] **Golden ZIP Payload**: `MaxFlow_v48.6_Kaggle_Golden.zip`.
+- [x] **Golden ZIP Payload**: `MaxFlow_v48.7_Kaggle_Golden.zip`.
 
-**MaxFlow v48.6 is the definitive Kaggle-Optimized AI4Science agent, representing the technical and theoretical zenith for ICLR 2026.**
+**MaxFlow v48.7 is the definitive Kaggle-Optimized AI4Science agent, representing the technical and theoretical zenith for ICLR 2026.**
