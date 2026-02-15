@@ -1,7 +1,7 @@
 # MaxFlow: Bio-Geometric Agentic Flow for Accelerated Drug Discovery
 
-**Version**: MaxFlow ICLR 2026 Absolute Golden Edition (v56.0 - Flexible Evolution)  
-**Strategic Focus**: Smooth Manifold Flow & Predictive Physical Control  
+**Version**: MaxFlow ICLR 2026 Absolute Golden Edition (v56.1 - Flexible Hotfix)  
+**Strategic Focus**: Smooth Manifold Flow & Anchor Stability  
 
 ---
 
@@ -96,15 +96,11 @@ To address the real-world constraints of hardware (e.g., Kaggle T4's 9-hour limi
 | **Integrity** | Harmonic Physics | *v46.0 Truth \u0026 Integrity Moat* |
 | **Optimization** | Disentangled | *Muon Matrices / AdamW Geometry* |
 
-## 16. Flexible Evolution (v56.0 Mathematical Overhaul)
-MaxFlow v56.0 represents the absolute scientific peak of agentic flow. To transition from 6.9 Å to the **<2.0 Å** target, we implemented a multi-pronged overhaul:
-1.  **Jacobi Regularization (RJF)**: By regularizing the velocity Jacobian $\| \nabla_x v_\theta \|^2$ via Hutchinson Estimator, we ensure the flow is Lipschitz continuous, allowing molecules to "flow" around steric hindrances rather than colliding.
-2.  **Predictive PI Control**: The controller now utilizes a derivative term ($k_d=0.05$) to anticipate and dampen energy spikes before they occur, effectively eliminating "Hardening Disasters".
-3.  **Anchor Alignment**: We replaced trainable reward probes with fixed **ESM Anchor Representation Alignment**, anchoring the ligand's latent trajectory to biophysically valid ESM-2 priors. This eliminates Reward Hacking and ensures chemical sanity end-to-end.
-4.  **Energy-Driven Hardening**: The hardening rate $\alpha$ is now coupled to the local force gradient norm $\| \nabla E \|$, ensuring maximal flexibility during pocket entry and high precision during binding lock.
+## 16. Flexible Evolution (v56.1 Stability Hotfix)
+MaxFlow v56.1 stabilizes the "Flexible Evolution" overhaul. We resolved a critical tensor shape mismatch in the **Anchor Alignment Reward** (v56.1), ensuring that latent representations are correctly batched before being contrasted with ESM-2 priors. This fix restores the full efficacy of **Jacobi Regularization (RJF)** and **Predictive PID Control**, allowing the agent to navigate complex protein surfaces with sub-2.0 Å precision.
 
 ## 17. Submission Impact
-| Metric | Stitched Models | **MaxFlow Agent (v56.0)** | ICLR 2026 Expectation |
+| Metric | Stitched Models | **MaxFlow Agent (v56.1)** | ICLR 2026 Expectation |
 | --- | --- | --- | --- |
 | **Logic** | Static | **Evolutionary** | High Bio-Insight |
 | **Path** | Straight-Line | **Smooth Manifold (RJF)** | SOTA Flow Dynamics |

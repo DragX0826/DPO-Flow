@@ -226,3 +226,7 @@
 - [x] **Energy-Driven Hardening**: Scheduled alpha based on gradient norm. [x]
 - [x] **Kernel-Smoothed Drift**: Gaussian smoothing for singular force zones. [x]
 - [x] **Versioning**: Update VERSION to v56.0. [x]
+
+## 51. The Flexible Hotfix (v56.1) [x]
+- [x] **Shape Fix**: Resolve RuntimeError (448 vs 64) in anchor reward. [x]
+- [x] **Versioning**: Update VERSION to v56.1. [x]

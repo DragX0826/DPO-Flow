@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v56.0 MaxFlow (ICLR 2026 Flexible Evolution Edition)"
+VERSION = "v56.1 MaxFlow (ICLR 2026 Flexible Evolution Hotfix)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -1804,7 +1804,8 @@ class MaxFlowExperiment:
                 # [v56.0] Anchor Alignment Reward (Chemical Sanity)
                 # Proximity to ESM-prior anchor in latent space
                 with torch.no_grad():
-                    s_current_mean = s_current.mean(dim=1) # (B, hidden_dim)
+                    # [v56.1 Hotfix] Reshape s_current (B*N, H) to (B, N, H) before mean
+                    s_current_mean = s_current.view(B, N, -1).mean(dim=1) # (B, hidden_dim)
                     anchor_reward = -torch.norm(s_current_mean - esm_anchor, dim=-1) # (B,)
                 
                 # [v34.1] GRPO-MaxRL: Advantage-Weighted Flow Matching
