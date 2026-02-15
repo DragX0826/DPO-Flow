@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v59.5 MaxFlow (ICLR 2026 Golden Calculus Refined - FP32 Sanctuary)"
+VERSION = "v59.6 MaxFlow (ICLR 2026 Golden Calculus Refined - Gradient Stability)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -332,9 +332,13 @@ class PhysicsEngine:
             pos_L_aligned = pos_L - joint_com
             pos_P_aligned = pos_P - joint_com
             
-            # [v59.5] Dist calculation (Stable in FP32 with safety epsilon)
-            dist = torch.cdist(pos_L_aligned, pos_P_aligned) + 1e-6
-            dist_sq = dist.pow(2)
+            # [v59.6 Fix] Stable Distance calculation for Gradient Stability
+            # torch.cdist has undefined gradients at dist=0, which causes Step 0 NaNs.
+            # Explicit squared distance + safe sqrt(eps) ensures finite gradients.
+            # (B, N, 1, 3) - (B, 1, M, 3) -> (B, N, M, 3)
+            diff = pos_L_aligned.unsqueeze(2) - pos_P_aligned.unsqueeze(1)
+            dist_sq = diff.pow(2).sum(dim=-1)
+            dist = torch.sqrt(dist_sq + 1e-9)
             
             # 2. Van der Waals Param Retrieval
             type_probs_L = x_L[..., :9]
@@ -1962,7 +1966,7 @@ class MaxFlowExperiment:
                 if torch.isnan(loss):
                     logger.error(f"   🚨 NaN Loss at Step {step}. Resetting Optimizer state.")
                     # Skip step and reset to prevent model corruption
-                    scaler.update() # Dummy update to maintain scaler state
+                    # [v59.6 Fix] DO NOT call scaler.update() if scale() was skipped/not backwarded
                     if self.config.use_muon:
                         opt_muon.zero_grad()
                         opt_adam.zero_grad()
