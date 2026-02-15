@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v57.0 MaxFlow (ICLR 2026 Scientific Pinnacle Edition)"
+VERSION = "v57.1 MaxFlow (ICLR 2026 Robust Scientific Pinnacle Edition)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -1713,9 +1713,21 @@ class MaxFlowExperiment:
         # [NEW] AMP & Stability Tools
         scaler = torch.cuda.amp.GradScaler(enabled=torch.cuda.is_available())
         accum_steps = self.config.accum_steps # [v37.0] Tuned for T4 stability
-        best_E = float('inf')
+        best_metric = float('inf') # [v57.1] Generic metric for stage-aware ES
         patience_counter = 0
         MAX_PATIENCE = 50
+        
+        # [v57.1] Initialize Dynamic KNN Scope
+        pos_P_sub = pos_P[:200]
+        x_P_sub = x_P[:200]
+        q_P_sub = q_P[:200]
+        
+        # [v57.1] Scientific Polish: ESM-feature driven initialization for x_L
+        with torch.no_grad():
+            x_P_batched = x_P.unsqueeze(0).repeat(B, 1, 1)
+            # Use cross-attention or simple projection to warm-up x_L
+            context_h = backbone.perception(x_P_batched).mean(dim=1, keepdim=True).repeat(1, N, 1)
+            x_L.data.add_(context_h * 0.1) # Add protein context to random noise
         
         # [v48.0] Standardized Batch Logic: (B, N, D)
         # We no longer flatten to B*N in the optimizer to avoid view mismatch
@@ -1814,9 +1826,10 @@ class MaxFlowExperiment:
                 
                 # [v57.0] Dynamic KNN Pocket Slicing (Environmental Awareness)
                 # Re-slice protein atoms every 50 steps based on ligand heartland
-                if step % 50 == 0 or step == 0:
+                if (step % 50 == 0 or step == 0) and step < self.config.steps - 1:
                     with torch.no_grad():
-                        current_p_center = pos_L.mean(dim=(0, 1))
+                        # [v57.1] Precision Centroid: Use first batch for representative slicing
+                        current_p_center = pos_L[0].mean(dim=0)
                         dist_to_p = torch.norm(pos_P - current_p_center, dim=-1)
                         # Atomic neighborhood 12A (ICLR Gold Standard)
                         near_indices = torch.where(dist_to_p < 12.0)[0]
@@ -2160,23 +2173,27 @@ class MaxFlowExperiment:
                 
                 # [STABILITY] Early Stopping
             
-            # [STABILITY] Early Stopping
-            current_E = batch_energy.min().item()
-            if current_E < best_E - 0.01:
-                best_E = current_E
+            # [v57.1] Stage-Aware Early Stopping
+            # Phase 1: Heavy supervision -> Monitor RMSD
+            # Phase 2: Physical relaxation -> Monitor Energy
+            current_metric = rmsd_loss.min().item() if step < 500 else batch_energy.min().item()
+            
+            if current_metric < best_metric - 0.005:
+                best_metric = current_metric
                 patience_counter = 0
             else:
                 patience_counter += 1
                 
             if patience_counter >= MAX_PATIENCE:
-                logger.info(f"   🛑 Early Stopping at step {step} (Energy converged at {best_E:.2f})")
+                logger.info(f"   🛑 Early Stopping at step {step} (Converged at {best_metric:.3f})")
                 break
                 
             # Keep log
             if step % 10 == 0:
                 history_E.append(loss.item())
                 if step % 100 == 0:
-                    logger.info(f"   Step {step}: Loss={loss.item():.2f}, E_min={current_E:.2f}, Temp={temp:.2f}")
+                    e_min = batch_energy.min().item()
+                    logger.info(f"   Step {step}: Loss={loss.item():.2f}, E_min={e_min:.2f}, Metric={current_metric:.2f}, Temp={temp:.2f}")
 
         # 4. Final Processing & Metrics
         best_idx = batch_energy.argmin()
@@ -2318,6 +2335,11 @@ def generate_master_report(experiment_results, all_histories=None):
         try:
              if 'Chem' not in globals():
                  import rdkit.Chem as Chem
+             if 'Descriptors' not in globals():
+                 from rdkit.Chem import Descriptors
+             if 'QED' not in globals():
+                 from rdkit.Chem import QED
+             
              mol = Chem.MolFromPDBFile(f"output_{name}.pdb")
              if mol:
                  qed = QED.qed(mol)
@@ -2334,7 +2356,10 @@ def generate_master_report(experiment_results, all_histories=None):
                  # Checks for (1) Atomic Clashes < 1.0A and (2) Bond Length Violations outside [1.1, 1.8]A
                  bond_violations = np.sum((d_mat[triu_idx] < 1.1) | (d_mat[triu_idx] > 1.8))
                  stereo_valid = "Pass" if (clashes == 0 and bond_violations == 0) else f"Fail({clashes}|{bond_violations})"
-        except: pass
+             else:
+                 qed, tpsa, clash_score, stereo_valid = "N/A", "N/A", "N/A", "Fail(Recon)"
+        except:
+             qed, tpsa, clash_score, stereo_valid = "N/A", "N/A", "N/A", "Fail(Ex)"
 
         # Honor RMSD Logic
         pose_status = "Reproduced" if rmsd_val < 2.0 else "Novel/DeNovo"
@@ -2491,7 +2516,7 @@ if __name__ == "__main__":
     all_histories = {} 
     
     if args.benchmark:
-        print("\n🏆 [v55.2] Starting Zenith Multivalent Benchmark (Human vs Veterinary)...")
+        run_scaling_benchmark()
         # 3 Human Targets vs 3 Veterinary Targets (FIP/Canine/CDV)
         targets_to_run = ["1UYD", "3PBL", "7SMV", "4Z94", "7KX5", "6XU4"]
         args.steps = 1000 
@@ -2526,7 +2551,7 @@ if __name__ == "__main__":
                 exp = MaxFlowExperiment(config)
                 hist = exp.run()
                 # [v35.8 Fix] Safety filter to avoid contaminations in master report
-                all_results.extend([r for r in exp.results if 'yield' in r])
+                all_results.extend([r for r in exp.results])
                 
                 if t_name == "7SMV": # Main showcase target
                     all_histories[cfg['name']] = hist
@@ -2535,14 +2560,14 @@ if __name__ == "__main__":
         
         # [AUTOMATION] Package everything for submission
         import zipfile
-        zip_name = f"MaxFlow_v55.3_Golden_Oral.zip"
+        zip_name = f"MaxFlow_{VERSION.split(' ')[0]}_Scientific_Pinnacle.zip"
         with zipfile.ZipFile(zip_name, "w") as z:
-            files_to_zip = [f for f in os.listdir(".") if f.endswith((".pdf", ".pdb", ".tex"))]
+            files_to_zip = [f for f in os.listdir(".") if f.endswith((".pdf", ".pdb", ".tex", ".pml"))]
             for f in files_to_zip:
                 z.write(f)
             z.write(__file__)
             
-        print(f"\n🏆 MaxFlow v55.3 (ICLR 2026 Golden Oral Refinement) Completed.")
+        print(f"\n🏆 {VERSION} Completed.")
         print(f"📦 Submission package created: {zip_name}")
         
     except Exception as e:

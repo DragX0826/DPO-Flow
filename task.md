@@ -246,3 +246,11 @@
 - [x] **Adaptive PID Control**: Link PID gains (kp, ki, kd) to time/progress. [x]
 - [x] **Scientific Evaluation Fix**: Fix Scaling Benchmark and implement PyMOL 3D overlays. [x]
 - [x] **Versioning**: Update VERSION to v57.0. [x]
+
+## 61. Robust Scientific Pinnacle (v57.1) [x]
+- [x] **Scope Fix**: Initialize Dynamic KNN variables to prevent NameError. [x]
+- [x] **Precision Centroid**: Fix centroid calculation to use representative sample (pos_L[0]). [x]
+- [x] **Balanced Early Stopping**: Implement stage-aware early stopping (RMSD then Energy). [x]
+- [x] **Resilient Reporting**: Handle metric failures with N/A instead of 0.0. [x]
+- [x] **Integrated Benchmark**: Enable scaling benchmark as a default pre-flight. [x]
+- [x] **Versioning**: Update VERSION to v57.1. [x]
