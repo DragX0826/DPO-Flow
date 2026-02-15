@@ -1,7 +1,7 @@
 # MaxFlow: Bio-Geometric Agentic Flow for Accelerated Drug Discovery
 
-**Version**: MaxFlow ICLR 2026 Golden Submission (v49.0 - Zenith)  
-**Strategic Focus**: Deployment Resilience & Oral Grade Polish  
+**Version**: MaxFlow ICLR 2026 Oral Edition (v50.0 - Zenith-Oral)  
+**Strategic Focus**: Physics-Informed Drifting Flow & Global Resilience  
 
 ---
 
@@ -24,11 +24,21 @@ MaxFlow implements a **Reasoning-Guided Generator**.
 
 ---
 
-## 4. Geometric Generative Policy (Energy-Conditioned Bi-SSM)
-To resolve "geometric interference," MaxFlow implements an **Energy-Conditioned Policy**.
-- **Fusion Weighting (v43.0)**: The Flow Matching loss is dynamically weighted by the current physical energy state. In high-conflict (clash) regions, the "Collision Avoidance" vector dominates.
-- **Physics-Driven Distributional Drifting (v47.0)**: To escape local minima during inference, MaxFlow implementes a **Drifting Field**. It applies a time-dependent momentum that transitions from high-exploration (drifting) to high-exploitation (energy locking) as the noise level $t \to 1$.
-- **Diffusion-Native Reward Modeling (DINA-LRM)**: Rewards are calibrated by **Physical Confidence**. During high-noise phases, structural sanity ($E_{intra}$) is prioritized over binding energy ($E_{inter}$), ensuring the model "untangles" molecular knots before docking, as per the DINA-LRM principle (Pang et al., 2026).
+## 4. Physics-Informed Drifting Flow (PI-Drift)
+Standard flow matching depends on $v_\theta$, which may deviate from physical reality. Inspired by **Drifting Models** [Deng et al., 2026], we introduce a physics-informed drift term $u_t$ to correct neural hallucinations in real-time.
+
+### Trajectory Equation:
+$$d\mathbf{x}_t = \left( v_\theta(\mathbf{x}_t) + \mu(t) \cdot \underbrace{(\nabla E(\mathbf{x}_t) - v_\theta(\mathbf{x}_t))}_{\text{Physics Residual Drift } u_t} \right) dt$$
+
+Where:
+- $v_\theta$: Neural flow matching field.
+- $\nabla E$: Physical energy gradient (Ground-Truth force).
+- $\mu(t)$: Time-dependent drift coefficient (Exploration $\to$ Exploitation).
+- $u_t$: The corrective drift steering the trajectory towards the manifold of valid conformers.
+
+### Strategic Implementation:
+- **Physics Residual Correction**: Instead of heuristic momentum, MaxFlow explicitly tracks the error between neural predictions and the physical energy landscape.
+- **DINA-LRM Integration**: Rewards are calibrated by **Physical Confidence**. During high-noise phases, structural sanity ($E_{intra}$) is prioritized over binding energy ($E_{inter}$), as per the DINA-LRM principle (Pang et al., 2026).
 
 ---
 
@@ -70,7 +80,7 @@ To address the real-world constraints of hardware (e.g., Kaggle T4's 9-hour limi
 | **Perception** | ESM-2 / EVA-Ready | *Lin et al., Science 2023 / EVA 2026* |
 | **Reasoning** | \u0394Belief-RL / ICA | *Auzina et al. / Pang et al., Feb 2026* |
 | **Backbone** | High-Flux Recurrent | *Cho et al., 2014 / Kaggle optimized* |
-| **Dynamics** | Drifting Field | *Cheng et al., Feb 2026* |
+| **Dynamics** | PI-Drift Field | *Deng et al., 2026 / Cheng et al., 2026* |
 | **Rewards** | DINA-LRM | *Pang et al., Feb 2026* |
 | **Generation** | RFM | *Lipman et al., ICLR 2023 / Chen et al., 2024* |
 | **Representation** | One-step FB | *Zheng, Jayanth \u0026 Eysenbach, Feb 2026* |
@@ -78,7 +88,7 @@ To address the real-world constraints of hardware (e.g., Kaggle T4's 9-hour limi
 | **Optimization** | Disentangled | *Muon Matrices / AdamW Geometry* |
 
 ## 12. Submission Impact
-| Metric | Stitched Models | **MaxFlow Agent (v49.0)** | ICLR 2026 Expectation |
+| Metric | Stitched Models | **MaxFlow Agent (v50.0)** | ICLR 2026 Expectation |
 | --- | --- | --- | --- |
 | **Logic** | Implicit | **Evolution-Guided** | High Bio-Insight |
 | **Path** | Static Flow | **Energy-Conditioned** | SOTA Flow Dynamics |
