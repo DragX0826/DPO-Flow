@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v54.1 MaxFlow (ICLR 2026 PI-Controlled Soft-Flow)"
+VERSION = "v55.0 MaxFlow (ICLR 2026 PI-CAH Zenith Hardening)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -39,7 +39,9 @@ def get_esm_model(model_name="esm2_t33_650M_UR50D"):
             import esm
             logger.info(f"🧬 [PLaTITO] Zenith: Loading ESM-2 Model ({model_name})... (May take 2-5 mins)")
             model, alphabet = esm.pretrained.load_model_and_alphabet(model_name)
-            model = model.to(device) # [v50.1 Fix] Ensure model is on the GPU for dynamic computation
+            model = model.to(device)
+            # [v55.0] Zenith Memory Hardening: Force FP16 to save 1.25GB VRAM on T4
+            model = model.half()
             model.eval()
             for p in model.parameters(): p.requires_grad = False
             _ESM_MODEL_CACHE[model_name] = (model, alphabet)
@@ -318,6 +320,9 @@ class PhysicsEngine:
             
             # Braking Factor
             braking = 1.0 + p_term + i_term
+            # [v55.0] PI Robustness: Cap braking to prevent controller saturation
+            braking = torch.clamp(braking, max=10.0) 
+            
             decay = self.hardening_rate / braking
             
             # [Safety Override] Forced Hardening at optimization tail (Anti-Soft-Lock)
@@ -2338,14 +2343,14 @@ if __name__ == "__main__":
         
         # [AUTOMATION] Package everything for submission
         import zipfile
-        zip_name = f"MaxFlow_v54.1_PI_Controlled.zip"
+        zip_name = f"MaxFlow_v55.0_Golden_Submission.zip"
         with zipfile.ZipFile(zip_name, "w") as z:
             files_to_zip = [f for f in os.listdir(".") if f.endswith((".pdf", ".pdb", ".tex"))]
             for f in files_to_zip:
                 z.write(f)
             z.write(__file__)
             
-        print(f"\n🏆 MaxFlow v54.1 (ICLR 2026 PI-Controlled Zenith) Completed.")
+        print(f"\n🏆 MaxFlow v55.0 (ICLR 2026 PI-CAH Zenith) Completed.")
         print(f"📦 Submission package created: {zip_name}")
         
     except Exception as e:

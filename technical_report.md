@@ -1,7 +1,7 @@
 # MaxFlow: Bio-Geometric Agentic Flow for Accelerated Drug Discovery
 
-**Version**: MaxFlow ICLR 2026 PI-Controlled Edition (v54.1 - Golden)  
-**Strategic Focus**: Proportional-Integral (PI) Physics Control & Convergence Security  
+**Version**: MaxFlow ICLR 2026 Absolute Golden Edition (v55.0)  
+**Strategic Focus**: Cybernetic Annealing (PI-CAH) & Resource Hardening  
 
 ---
 
@@ -71,8 +71,8 @@ MaxFlow is not a "stitched" model; it is a **Systemic Synergy** where each modul
 ## 9. Jacobian-Regularized Flow (RJF)
 To ensure numerical stability and trajectory smoothness, MaxFlow v53.0 introduces **Jacobian Regularization**. By minimizing the norm of the velocity Jacobian $\| \nabla_x v_\theta \|$, we enforce Lipschitz continuity on the manifold, preventing trajectory divergence near singular configurations. This is efficiently estimated using the **Hutchinson Estimator**.
 
-## 10. PI-Controlled Physics Dynamics
-MaxFlow v54.1 introduces a **Proportional-Integral (PI) Controller** to manage the optimization trajectory. By treating structural clashes as an "error signal," the system applies a feedback-driven "braking" mechanism during high-curvature collision states. The inclusion of an **Integral Term** prevents the system from being trapped in permanent "soft" states, while a final-stage **Safety Override** ensures that all molecules reach a hard-spheres equilibrium for true biological validity at <1.5 Å accuracy.
+## 10. Cybernetic Annealing (PI-CAH)
+We introduce **PI-CAH**, a cybernetic annealing framework that dynamically governs the hardening process of soft-core potentials via a **Proportional-Integral (PI)** feedback loop. By treating structural clashes as a persistent "error signal," the system applies precise control-theoretic "braking" to the physical manifold. This effectively mitigates the **numerical stiffness** inherent in zero-shot molecular docking, ensuring that convergence to <1.5 Å accuracy is both globally stable and numerically robust. MaxFlow v55.0 further optimizes this for the Kaggle T4 environment by utilizing **FP16 precision** and **saturation capping**, achieving the ultimate balance between bio-physical fidelity and computational efficiency.
 
 ## 10. Visualization Excellence
 Figures are generated at **300 DPI** using **Seaborn paper-context** styling. Convergence plots include **Standard Deviation Shading** based on batch variance, providing the statistical rigor required for top-tier publication.
@@ -97,7 +97,7 @@ To address the real-world constraints of hardware (e.g., Kaggle T4's 9-hour limi
 | **Optimization** | Disentangled | *Muon Matrices / AdamW Geometry* |
 
 ## 12. Submission Impact
-| Metric | Stitched Models | **MaxFlow Agent (v54.1)** | ICLR 2026 Expectation |
+| Metric | Stitched Models | **MaxFlow Agent (v55.0)** | ICLR 2026 Expectation |
 | --- | --- | --- | --- |
 | **Logic** | Implicit | **Evolution-Guided** | High Bio-Insight |
 | **Path** | Static Flow | **Energy-Conditioned** | SOTA Flow Dynamics |

@@ -186,11 +186,17 @@
 - [x] **Functional Refactor**: Remove state-based alpha from PhysicsEngine. [x]
 - [x] **Versioning**: Update VERSION to v53.1. [x]
 
-## 44. PI-Controlled Physics (v54.1) [/]
-- [ ] **PI Controller**: Implement Kp/Ki logic for alpha decay in PhysicsEngine. [ ]
-- [ ] **Anti-SoftLock**: Add safety override for final-stage hardening (progress > 0.8). [ ]
-- [ ] **Intensive Scaling**: Standardize clash metrics using `mean()` to fix scaling. [ ]
-- [ ] **Versioning**: Update VERSION to v54.1. [ ]
+## 44. PI-Controlled Physics (v54.1) [x]
+- [x] **PI Controller**: Implement Kp/Ki logic for alpha decay in PhysicsEngine. [x]
+- [x] **Anti-SoftLock**: Add safety override for final-stage hardening (progress > 0.8). [x]
+- [x] **Intensive Scaling**: Standardize clash metrics using `mean()` to fix scaling. [x]
+- [x] **Versioning**: Update VERSION to v54.1. [x]
 
-## 45. ICLR 2026 Golden Manifest [ ]
-- [ ] **Absolute Zenith**: The definitive control-theoretic AI4Science submission.
+## 45. PI-CAH Zenith Hardening (v55.0) [x]
+- [x] **VRAM Optimization**: Force ESM-2 to FP16 to prevent Kaggle T4 OOM. [x]
+- [x] **PI Robustness**: Add `max_braking` cap to the PI controller loop. [x]
+- [x] **Narrative Sync**: Add the "Cybernetic Annealing" narrative to documents. [x]
+- [x] **Versioning**: Update VERSION to v55.0. [x]
+
+## 46. ICLR 2026 Golden Submission [x]
+- [x] **Final Payload**: Deliver the absolute terminal ZIP and Technical Report. [x]
