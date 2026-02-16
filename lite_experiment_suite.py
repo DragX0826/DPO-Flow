@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v60.3 MaxFlow (ICLR 2026 Golden Calculus Refined - The Final Polish)"
+VERSION = "v60.4 MaxFlow (ICLR 2026 Golden Calculus Refined - Heterogeneous Miners)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -1669,16 +1669,18 @@ class MaxFlowExperiment:
         q_L = nn.Parameter(torch.randn(B, N, device=device))    
         
         # Ligand Positions (Gaussian Cloud around Pocket)
-        # [v60.3 Fix] Adaptive Macro-Noise for Large Proteins/Ligands
-        # If the system is large (N > 50), expand search radius to 10.0A to ensure pocket discovery.
-        if N > 50:
-            noise_scale = 10.0
-            logger.info(f"   🌊 Macro-Noise active for large system (N={N}): 10.0A radius.")
-        else:
-            noise_scale = 3.0
+        # --- [v60.4] Heterogeneous Miners Initialization (DNA Genes) ---
+        # 1. Individual Miner Spectrum (0.0=Conservative, 1.0=Radical)
+        miner_genes = torch.linspace(0.0, 1.0, B, device=device) # (B,)
         
-        noise = torch.randn(B, N, 3, device=device) * noise_scale
-        pos_L = (p_center.view(1, 1, 3) + noise).detach()
+        # 2. Noise Genes: Scale from 3.0A (Refinement) to 15.0A (Wide Search)
+        noise_scales = 3.0 + miner_genes.view(B, 1, 1) * 12.0 
+        
+        # 3. Geometry Genes: Factor from 2.0x (Hard) to 0.5x (Soft/Elastic)
+        bond_stiffness_factors = 2.0 - 1.5 * miner_genes # Conservative(2.0), Radical(0.5)
+        
+        # 4. Apply Initial Noise (based on individual scales)
+        pos_L = (p_center.view(1, 1, 3) + torch.randn(B, N, 3, device=device) * noise_scales).detach()
         pos_L.requires_grad = True
         q_L.requires_grad = True
         
@@ -1929,6 +1931,16 @@ class MaxFlowExperiment:
                                 pos_L.data[dst_idx] = pos_L.data[src_idx] + torch.randn_like(pos_L[dst_idx]) * (0.5 * (1.0 - progress))
                                 q_L.data[dst_idx] = q_L.data[src_idx].detach().clone()
                                 x_L.data[dst_idx] = x_L.data[src_idx].detach().clone()
+                                
+                                # [v60.4] Parameter Infection (Gene Transfer)
+                                # If an outlier gene (e.g. 15A noise) works, the population adopts it.
+                                noise_scales.data[dst_idx] = noise_scales.data[src_idx].clone()
+                                bond_stiffness_factors.data[dst_idx] = bond_stiffness_factors.data[src_idx].clone()
+                                
+                                # [v60.4] DNA Mutation (10% chance)
+                                if torch.rand(1).item() < 0.1:
+                                    mutation = 0.9 + 0.2 * torch.rand(1, device=device)
+                                    noise_scales.data[dst_idx] *= mutation
 
                 # Flow Field Prediction
                 # [v58.2 Hotfix] Disable CuDNN to allow double-backward through GRU backbone
@@ -1971,17 +1983,21 @@ class MaxFlowExperiment:
                 
                 # [v60.0 Relaxed Harmonic Constraints]
                 # Lower weights (100.0/10.0 instead of 500/50) to prevent "Hardening too fast"
-                w_bond = 1.0 + (100.0 - 1.0) * (progress ** 1.5)
+                w_bond_base = 1.0 + (100.0 - 1.0) * (progress ** 1.5)
                 w_hard = 1.0 + (10.0 - 1.0) * (progress ** 1.5)
+                
+                # [v60.4] Heterogeneous Physics (Phenotype Expression)
+                # Multiply global curriculum by individual miner genes
+                w_bond_batch = w_bond_base * bond_stiffness_factors # (B,)
                 
                 # Adaptive scaling: Increase constraints as alpha (softness) decreases
                 alpha_factor = 1.0 + 2.0 * (1.0 - alpha / self.phys.params.softness_start)
-                w_bond *= alpha_factor
+                w_bond_batch *= alpha_factor
                 w_hard *= alpha_factor
                 
                 # Unified Target Velocity Selection
                 # E_total = E_soft + w_hard*E_hard + w_bond*E_bond
-                total_energy = e_soft + w_hard * e_hard + w_bond * e_bond
+                total_energy = e_soft + w_hard * e_hard + w_bond_batch * e_bond
                 
                 # [v58.2] Set create_graph=False as v_target is detached. 
                 force_total = -torch.autograd.grad(total_energy.sum(), pos_L, create_graph=False, retain_graph=True)[0]
