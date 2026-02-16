@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v61.9 MaxFlow (ICLR 2026 Golden Calculus Refined - Pauli Incompatibility)"
+VERSION = "v62.0 MaxFlow (ICLR 2026 Golden Calculus Refined - Bond-First Strategy)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -2061,16 +2061,10 @@ class MaxFlowExperiment:
                 # Internal Geometry (Bonds & Angles)
                 e_bond = self.phys.calculate_internal_geometry_score(pos_L_reshaped) 
                 
-                # [v60.0 Relaxed Harmonic Constraints]
-                # Lower weights (100.0/10.0 instead of 500/50) to prevent "Hardening too fast"
-                # [v61.5 Fix] Liquid State (The Fluid Swarm): Zero stiffness for first 50%
-                # This allows perfect induced fit before freezing the conformation.
-                if progress < 0.5:
-                    w_bond_base = 0.0
-                else:
-                    # Ramp up w_bond_base starting from 0.5
-                    adj_progress = (progress - 0.5) / 0.5
-                    w_bond_base = 1.0 + (100.0 - 1.0) * (adj_progress ** 1.5)
+                # [v62.0 Fix A] Rubber Band Bonds: Dynamic Stiffness
+                # Instead of a zero-stiffness phase, maintain a base of 10.0 and ramp to 200.0
+                # This ensures atoms "stay together" despite strong repulsive forces.
+                w_bond_base = 10.0 + 190.0 * (progress ** 2)
                 
                 w_hard = 1.0 + (10.0 - 1.0) * (progress ** 1.5)
                 
@@ -2090,12 +2084,12 @@ class MaxFlowExperiment:
                 # [v58.2] Set create_graph=False as v_target is detached. 
                 force_total = -torch.autograd.grad(total_energy.sum(), pos_L, create_graph=False, retain_graph=True)[0]
                 
-                # [v59.2 Fix] Use Direction-Preserving Soft-Clip instead of Hard Clamp
-                # [v61.9 Fix] Repulsion Unclipping: Allow massive repulsive forces during clashes
-                if e_hard.mean() < 10.0:
-                    v_target = self.phys.soft_clip_vector(force_total.detach(), max_norm=20.0)
-                else:
-                    v_target = force_total.detach() # Allow explosive force to resolve singularity
+                # [v62.0 Fix B] Tanh Soft-Clamp Ceiling (100.0)
+                # Allowing large gradients for clash resolution but preventing infinite explosion.
+                # v_target = self.phys.soft_clip_vector(force_total.detach(), max_norm=20.0) # Old
+                norm = force_total.norm(dim=-1, keepdim=True)
+                scale = (100.0 * torch.tanh(norm / 100.0)) / (norm + 1e-6)
+                v_target = force_total.detach() * scale
                 
                 # Update Annealing based on Force Magnitude
                 f_mag = v_target.norm(dim=-1).mean().item()
@@ -2119,8 +2113,14 @@ class MaxFlowExperiment:
                 s_mean = s_current.view(B, N, -1).mean(dim=1) # (B, H)
                 loss_semantic = (s_mean - esm_anchor.view(B, -1)).pow(2).mean()
                 
-                # Unified Formula: FM + RJF + Semantic
-                loss = loss_fm + 0.1 * jacob_reg + 0.05 * loss_semantic 
+                # [v62.0 Fix C] Molecular Cohesion: Connectivity Potential
+                # Penalize any atom whose nearest neighbor is further than 1.6A.
+                dist_matrix = torch.cdist(pos_L, pos_L) + torch.eye(N, device=device).unsqueeze(0) * 10.0
+                min_neighbor_dist = dist_matrix.min(dim=-1)[0] # (B, N)
+                loss_cohesion = torch.relu(min_neighbor_dist - 1.6).pow(2).mean()
+
+                # Unified Formula: FM + RJF + Semantic + Cohesion
+                loss = loss_fm + 0.1 * jacob_reg + 0.05 * loss_semantic + 5.0 * loss_cohesion
 
                 # [v59.5 Fix] NaN Sentry inside the loop
                 # Check for NaNs immediately after backward
