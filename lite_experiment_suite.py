@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v61.8 MaxFlow (ICLR 2026 Golden Calculus Refined - Seismic Rescue)"
+VERSION = "v61.8.1 MaxFlow (ICLR 2026 Golden Calculus Refined - Seismic Rescue Hotfix)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -1959,11 +1959,8 @@ class MaxFlowExperiment:
                                     market_base_scores = -batch_energy
                             
                             centroids = pos_L.mean(dim=1) # (B, 3)
-                            # [v60.8] DNA Mutation (10% chance)
-                            if random.random() < 0.1:
-                                # Use scalar for mutation to avoid broadcast errors [RuntimeError Fix]
-                                mutation = 0.8 + 0.4 * random.random() # 0.8 ~ 1.2
-                                bond_factors.data[dst_idx] *= mutation
+                            # [v61.8 Fix] Restore Diversity: Mean distance of ligand centroids to others in batch
+                            diversity = torch.cdist(centroids, centroids).mean(dim=1) # (B,)
                         
                         # [v61.8 Fix] The Market-Flow: Z-Score Normalization
                         # Balance Energy and Diversity via normalized units
@@ -1989,6 +1986,12 @@ class MaxFlowExperiment:
                             x_L.data[dst_idx] = x_L.data[src_idx].detach().clone()
                             noise_scales.data[dst_idx] = noise_scales.data[src_idx].clone()
                             bond_factors.data[dst_idx] = bond_factors.data[src_idx].clone()
+
+                            # [v60.8] DNA Mutation (10% chance)
+                            if random.random() < 0.1:
+                                # Use scalar for mutation to avoid broadcast errors [RuntimeError Fix]
+                                mutation = 0.8 + 0.4 * random.random() # 0.8 ~ 1.2
+                                bond_factors.data[dst_idx] *= mutation
 
                 # Flow Field Prediction
                 # [v58.2 Hotfix] Disable CuDNN to allow double-backward through GRU backbone
