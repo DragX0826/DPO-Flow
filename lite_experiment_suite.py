@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v61.1 MaxFlow (ICLR 2026 Golden Calculus Refined - SOTA Protocol)"
+VERSION = "v61.2 MaxFlow (ICLR 2026 Golden Calculus Refined - Breach & Embed)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -364,14 +364,16 @@ class PhysicsEngine:
             
             # vdW
             inv_sc_dist = sigma_ij.pow(2) / (dist_sq + self.current_alpha * sigma_ij.pow(2) + 1e-6)
-            e_vdw = 0.15 * (inv_sc_dist.pow(6) - inv_sc_dist.pow(3))
+            # [v61.2 Fix] Stronger Glue: increase VdW weight for deeper penetration
+            e_vdw = 1.0 * (inv_sc_dist.pow(6) - inv_sc_dist.pow(3))
             
             # [v60.5 Fix] Safe Nuclear Shield
             # Prevent NaN by clamping minimum distance for repulsion calculation
             r_safe = torch.clamp(dist, min=0.6) # Clamp at 0.6A
             
-            # Ramp up weight: 10.0 (start) -> 1000.0 (end)
-            w_nuc = 10.0 + 990.0 * (step_progress**2) 
+            # [v61.2 Fix] Softer Shield Start: Allow early-stage penetration
+            # Ramp up weight: 0.1 (start) -> 1000.0 (end) with cubic ramp
+            w_nuc = 0.1 + 999.9 * (step_progress**3) 
             
             # Calculate repulsion but clamp the MAXIMUM energy value
             raw_repulsion = (0.8 / r_safe).pow(12)
@@ -1693,7 +1695,8 @@ class MaxFlowExperiment:
         
         # 2. 幾何剛性基因 (Geometric Stiffness)
         # 激進派允許鍵長扭曲 (便於穿牆)，保守派嚴格遵守化學鍵
-        bond_factors = 2.0 - 1.5 * miner_genes # Range: [2.0, 0.5]
+        # [v61.2 Fix] Allow more flexibility for induced fit: Range [2.0, 0.1]
+        bond_factors = 2.0 - 1.9 * miner_genes 
 
         # [v61.0 Debug] Force Correct Pocket Center (Redocking Mode)
         # 如果開啟 Redocking，強制將搜索中心對準原位配體，並縮減初始噪聲
