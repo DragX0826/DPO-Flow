@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v60.1 MaxFlow (ICLR 2026 Golden Calculus Refined - The Chemist's Constraint)"
+VERSION = "v60.2 MaxFlow (ICLR 2026 Golden Calculus Refined - CLI Hardening)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -2496,7 +2496,7 @@ def run_scaling_benchmark():
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description=f"MaxFlow {VERSION} ICLR Suite")
-    parser.add_argument("--target", type=str, default="1UYD", help="Target PDB ID (e.g., 1UYD, 7SMV, 3PBL, 5R8T)")
+    parser.add_argument("--target", "--pdb_id", type=str, default="1UYD", help="Target PDB ID (e.g., 1UYD, 7SMV, 3PBL, 5R8T)")
     parser.add_argument("--steps", type=int, default=1000)
     parser.add_argument("--batch", type=int, default=16)
     parser.add_argument("--benchmark", action="store_true", help="Run comprehensive multi-target ICLR benchmark")
