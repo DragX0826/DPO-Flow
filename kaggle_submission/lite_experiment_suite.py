@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v63.0 MaxFlow (ICLR 2026 Golden Calculus Refined - The Unified Field)"
+VERSION = "v63.1 MaxFlow (ICLR 2026 Golden Calculus Refined - The Robust Field)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -321,35 +321,25 @@ class PhysicsEngine:
 
     def compute_gaussian_energy(self, x_L, x_P, sigma=1.0):
         """
-        [SOTA] Gaussian Smoothed Potential (Score-Based Physics)
-        建立一個光滑的能量漏斗，沒有奇異點(Singularity)。
+        [v63.1 Robust] Gaussian Smoothed Potential
+        使用平方和展開取代 torch.cdist，避免 r=0 時的梯度不穩定。
         """
-        # 計算距離矩陣 (B, N_L, N_P)
-        dists = torch.cdist(x_L, x_P)
+        # 計算距離平方矩陣 (B, N_L, N_P)
+        # dist_sq = |x_L - x_P|^2 = x_L^2 + x_P^2 - 2*x_L*x_P
+        dist_sq = (x_L.unsqueeze(2) - x_P.unsqueeze(1)).pow(2).sum(-1)
         
         # 高斯吸引勢能: E = -Sum( exp( -r^2 / 2*sigma^2 ) )
-        # 這本質上是在計算配體與蛋白的「體積重疊度」，但用高斯模糊過了
-        gauss_term = torch.exp(-dists.pow(2) / (2 * sigma**2))
+        gauss_term = torch.exp(-dist_sq / (2 * sigma**2 + 1e-6))
         
-        # 負號代表吸引 (重疊越多能量越低)
-        # 乘上一個係數讓梯度足夠大
         return -10.0 * gauss_term.sum(dim=(1, 2))
 
     def compute_energy(self, pos_L, pos_P, q_L, q_P, x_L, x_P, step_progress=0.0):
         """
-        v63.0: The Unified Field (Sigmoidal Crossfade Hybrid)
-        [v59.5] FP32 Sanctuary. 
-        Forces physics calculation in float32 to prevent NaN in gradients under FP16.
+        v63.1: The Robust Field (C1 Blending + Alpha Sync)
         """
-        # [Critical Fix] Disable Autocast for physics math
         with torch.cuda.amp.autocast(enabled=False):
-            # 1. Cast everything to float32 for stable high-precision math
-            pos_L = pos_L.float()
-            pos_P = pos_P.float()
-            q_L = q_L.float()
-            q_P = q_P.float()
-            x_L = x_L.float()
-            x_P = x_P.float()
+            pos_L, pos_P, q_L, q_P = pos_L.float(), pos_P.float(), q_L.float(), q_P.float()
+            x_L, x_P = x_L.float(), x_P.float()
             B = pos_L.size(0)
 
             # [v59.3 Fix] Joint Centric Alignment
@@ -358,24 +348,23 @@ class PhysicsEngine:
             pos_L_aligned = pos_L - joint_com
             pos_P_aligned = pos_P - joint_com
 
-            # [v63.0] Sigmoidal Blending (Crossfade Logic)
-            # Center the transition at 60% with a sharpness of 15
+            # [v63.0] Sigmoidal Blending
             w_sigmoid = torch.sigmoid(torch.tensor(15.0 * (step_progress - 0.6), device=pos_L.device))
             
             # --- Field 1: Gaussian Smoothing ---
-            # Sigma 從 5.0 (模糊) 降到 1.0 (精確)
             current_sigma = 5.0 - 4.0 * step_progress
             e_gauss = self.compute_gaussian_energy(pos_L_aligned, pos_P_aligned, sigma=current_sigma)
             
-            # 佔位力場: 前期強 (5.0)，後期弱 (1.0)
             suction_weight = 5.0 * (1.0 - w_sigmoid) + 1.0 * w_sigmoid
             center_dist = torch.norm(pos_L_aligned.mean(dim=1), dim=-1)
             e_suction = suction_weight * center_dist.pow(2)
 
             # --- Field 2: Ghost Materialization (LJ) ---
-            # [v63.0 Stability] Radius softens starting from 0.3x to prevent NaN at Step 840
-            radius_scale = 0.3 + 0.6 * step_progress # 0.3 -> 0.9
+            # Safe squared dist to avoid NaN at r=0
+            dist_sq = (pos_L_aligned.unsqueeze(2) - pos_P_aligned.unsqueeze(1)).pow(2).sum(-1)
+            dists = torch.sqrt(dist_sq + 1e-8)
             
+            radius_scale = 0.3 + 0.6 * step_progress 
             type_probs_L = x_L[..., :9]
             radii_L = (type_probs_L @ self.params.vdw_radii[:9].float()) * radius_scale
             
@@ -384,26 +373,20 @@ class PhysicsEngine:
             radii_P = (x_P[..., :4] @ prot_radii_map) * radius_scale
             sigma_ij = radii_L.unsqueeze(-1) + radii_P.unsqueeze(1)
             
-            dists = torch.cdist(pos_L_aligned, pos_P_aligned)
             inv_sc_dist = sigma_ij / (dists + 1e-6)
-            
             e_vdw = 1.0 * (inv_sc_dist.pow(12) - 2.0 * inv_sc_dist.pow(6))
             e_lj = e_vdw.sum(dim=(1, 2))
             
-            # Nuclear Shield (慢慢顯現)
-            r_safe = torch.clamp(dists, min=0.5)
             w_nuc = 0.1 * w_sigmoid 
-            nuclear_repulsion = w_nuc * (0.6 / r_safe).pow(12).sum(dim=(1, 2))
-            
-            # Clash definition for Market-Flow
+            nuclear_repulsion = w_nuc * (0.6 / (dists + 0.1)).pow(12).sum(dim=(1, 2))
             e_clash = (dists < sigma_ij * 0.6).float().sum(dim=(1, 2))
             
-            # Alpha Annealing (5.0 -> 0.1)
-            current_alpha = 5.0 * (1.0 - step_progress) + 0.1
+            # [v63.1] Alpha Sync: 確保 Alpha-Rescue 能影響混合場
+            target_alpha = 5.0 * (1.0 - step_progress) + 0.1
+            effective_alpha = (1.0 - w_sigmoid) * 5.0 + w_sigmoid * max(target_alpha, self.current_alpha)
 
-            # --- Final Unified Field Sum ---
             e_total = (1.0 - w_sigmoid) * (e_gauss + e_suction) + w_sigmoid * (e_lj + nuclear_repulsion)
-            return e_total, e_clash * w_sigmoid, current_alpha
+            return e_total, e_clash * w_sigmoid, effective_alpha
 
     # --- SECTION 4: SCIENTIFIC METRICS (ICLR RIGOUR) ---
     def calculate_valency_loss(self, pos_L, x_L):
