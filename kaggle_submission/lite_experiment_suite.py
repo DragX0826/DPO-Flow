@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v61.0 MaxFlow (ICLR 2026 Golden Calculus Refined - Thermal Resurrection)"
+VERSION = "v61.1 MaxFlow (ICLR 2026 Golden Calculus Refined - SOTA Protocol)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -2570,6 +2570,7 @@ if __name__ == "__main__":
     parser.add_argument("--benchmark", action="store_true", help="Run comprehensive multi-target ICLR benchmark")
     parser.add_argument("--mutation_rate", type=float, default=0.0, help="Mutation rate for resilience benchmarking")
     parser.add_argument("--ablation", action="store_true", help="Run full scientific ablation suite")
+    parser.add_argument("--redocking", action="store_true", help="Enable SOTA Benchmark Protocol (Pocket-Aware Redocking)")
     args = parser.parse_args()
     
     print(f"🌟 Launching {VERSION} ICLR Suite...")
@@ -2608,7 +2609,8 @@ if __name__ == "__main__":
                     steps=args.steps,
                     batch_size=args.batch,
                     use_muon=cfg['use_muon'],
-                    no_physics=cfg['no_physics']
+                    no_physics=cfg['no_physics'],
+                    redocking=args.redocking # [v61.1] Formalized SOTA Protocol
                 )
                 exp = MaxFlowExperiment(config)
                 hist = exp.run()
