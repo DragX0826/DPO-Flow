@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v60.5 MaxFlow (ICLR 2026 Golden Calculus Refined - Safe-Guard Repulsion)"
+VERSION = "v60.6 MaxFlow (ICLR 2026 Golden Calculus Refined - Online Evolutionary Strategy)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -674,14 +674,20 @@ class RealPDBFeaturizer:
                                 res_char = 'X'
                             res_sequences.append(res_char)
                             
-                        # Ligand (HETATM)
-                        # We specifically look for the ligand, tricky if multiple HETATMs (waters/ions)
-                        # Heuristic: HETATM with > 5 atoms and not HOH
-                        elif res.id[0].startswith('H_') and res.get_resname() not in ['HOH','WAT', 'NA', 'CL', 'ZN']:
-                             # Often the ligand has a specific resname, but we treat all large HETATMs as target for "native"
-                             # For now, just take all non-water HETATMs
+                        # Ligand (HETATM) Parsing - [v60.6 SOTA Fix]
+                        # 智能過濾：只選取原子數最多的單一有機分子，排除離子、水和緩衝液
+                        elif res.id[0].startswith('H_') and res.get_resname() not in ['HOH', 'WAT', 'NA', 'CL', 'MG', 'ZN', 'SO4', 'PO4']:
+                             # 暫存候選配體
+                             candidate_atoms = []
                              for atom in res:
-                                 native_ligand.append(atom.get_coord())
+                                 candidate_atoms.append(atom.get_coord())
+                             
+                             # 只有當這個殘基有一定規模時才考慮（過濾掉單原子離子）
+                             if len(candidate_atoms) > 1:
+                                 # 只有當前殘基比之前的 native_ligand 更多原子時才替換
+                                 if len(candidate_atoms) > len(native_ligand):
+                                     native_ligand = candidate_atoms
+                                     logger.info(f"   🧬 [Data] Found dominant ligand {res.get_resname()} with {len(native_ligand)} atoms.")
             
             if not native_ligand:
                 logger.warning(f"No ligand found in {pdb_id}. Creating mock cloud.")
@@ -1676,22 +1682,19 @@ class MaxFlowExperiment:
         q_L = nn.Parameter(torch.randn(B, N, device=device))    
         
         # Ligand Positions (Gaussian Cloud around Pocket)
-        # --- [v60.4] Heterogeneous Miners Initialization (DNA Genes) ---
-        # 1. Individual Miner Spectrum (0.0=Conservative, 1.0=Radical)
+        # [v60.6 SOTA] Heterogeneous Miner Genesis (The Darwinian Swarm)
+        # 0.0 = 保守派 (精修工), 1.0 = 激進派 (探險家)
         miner_genes = torch.linspace(0.0, 1.0, B, device=device) # (B,)
+
+        # 1. 自適應搜索半徑 (Adaptive Search Radius)
+        # 激進派搜索範圍極大 (25.0A)，保守派只在中心附近 (2.0A)
+        noise_scales = 2.0 + miner_genes.view(B, 1, 1) * 23.0 # Range: [2.0, 25.0]
         
-        # 2. Noise Genes: Scale from 3.0A (Refinement) to 15.0A (Wide Search)
-        # [v60.5 Fix] Tame the Macro-Noise for large systems to avoid initial instability
-        if N > 50:
-            noise_scales = 3.0 + miner_genes.view(B, 1, 1) * 4.0 # Cap at 7.0A
-            logger.info(f"   🌊 Tamed Macro-Noise active for large system (N={N}): 7.0A radius.")
-        else:
-            noise_scales = 3.0 + miner_genes.view(B, 1, 1) * 12.0 
-        
-        # 3. Geometry Genes: Factor from 2.0x (Hard) to 0.5x (Soft/Elastic)
-        bond_stiffness_factors = 2.0 - 1.5 * miner_genes # Conservative(2.0), Radical(0.5)
-        
-        # 4. Apply Initial Noise (based on individual scales)
+        # 2. 幾何剛性基因 (Geometric Stiffness)
+        # 激進派允許鍵長扭曲 (便於穿牆)，保守派嚴格遵守化學鍵
+        bond_factors = 2.0 - 1.5 * miner_genes # Range: [2.0, 0.5]
+
+        # 3. 應用多樣化噪聲
         pos_L = (p_center.view(1, 1, 3) + torch.randn(B, N, 3, device=device) * noise_scales).detach()
         pos_L.requires_grad = True
         q_L.requires_grad = True
@@ -1944,15 +1947,15 @@ class MaxFlowExperiment:
                                 q_L.data[dst_idx] = q_L.data[src_idx].detach().clone()
                                 x_L.data[dst_idx] = x_L.data[src_idx].detach().clone()
                                 
-                                # [v60.4] Parameter Infection (Gene Transfer)
-                                # If an outlier gene (e.g. 15A noise) works, the population adopts it.
+                                # [v60.6] The Viral Update (Parameter Infection)
+                                # 這是演化算法的核心：強者的基因會統治種群
                                 noise_scales.data[dst_idx] = noise_scales.data[src_idx].clone()
-                                bond_stiffness_factors.data[dst_idx] = bond_stiffness_factors.data[src_idx].clone()
+                                bond_factors.data[dst_idx] = bond_factors.data[src_idx].clone()
                                 
-                                # [v60.4] DNA Mutation (10% chance)
-                                if torch.rand(1).item() < 0.1:
-                                    mutation = 0.9 + 0.2 * torch.rand(1, device=device)
-                                    noise_scales.data[dst_idx] *= mutation
+                                # [v60.6] DNA Mutation (10% chance)
+                                if random.random() < 0.1:
+                                    mutation = 0.8 + 0.4 * torch.rand(1, device=device) # 0.8 ~ 1.2
+                                    bond_factors.data[dst_idx] *= mutation
 
                 # Flow Field Prediction
                 # [v58.2 Hotfix] Disable CuDNN to allow double-backward through GRU backbone
@@ -2005,9 +2008,9 @@ class MaxFlowExperiment:
                 w_bond_base = 1.0 + (100.0 - 1.0) * (progress ** 1.5)
                 w_hard = 1.0 + (10.0 - 1.0) * (progress ** 1.5)
                 
-                # [v60.4] Heterogeneous Physics (Phenotype Expression)
+                # [v60.6] Phenotype Expression (DNA Physics)
                 # Multiply global curriculum by individual miner genes
-                w_bond_batch = w_bond_base * bond_stiffness_factors # (B,)
+                w_bond_batch = w_bond_base * bond_factors # (B,)
                 
                 # Adaptive scaling: Increase constraints as alpha (softness) decreases
                 alpha_factor = 1.0 + 2.0 * (1.0 - alpha / self.phys.params.softness_start)
