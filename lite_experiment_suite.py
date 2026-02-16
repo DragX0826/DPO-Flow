@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v62.7 MaxFlow (ICLR 2026 Golden Calculus Refined - True North Strategy)"
+VERSION = "v62.8 MaxFlow (ICLR 2026 Golden Calculus Refined - Absolute Zero Strategy)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -2195,6 +2195,27 @@ class MaxFlowExperiment:
                 # If nearest neighbor < 1.4A,施加推力把它推回 1.5A
                 loss_expansion = torch.relu(1.5 - min_neighbor_dist).pow(2).mean()
 
+                # [v62.8 Fix A] Free Fall: Silence artificial forces after 70% progress
+                # [v62.8 Fix C] Final Annealing: Hard-set alpha to 0.01 after 90% progress
+                if progress > 0.7:
+                    loss_dark_energy = 0.0
+                    loss_compact = torch.zeros_like(loss_compact)
+                    loss_anchor = 0.0
+                    loss_expansion = 0.0
+                    
+                    # [Fix C] Hard-set alpha for Absolute Zero precision
+                    if progress > 0.9:
+                        self.phys.current_alpha = 0.01
+                    
+                    # Scale down learning rates to simulate "Cooling" (Absolute Zero)
+                    # This replaces the dt_euler *= 0.1 logic in TTT mode
+                    if step % accum_steps == 0:
+                        for g in opt_muon.param_groups if self.config.use_muon else opt.param_groups:
+                            g['lr'] = self.config.lr * 0.1
+                        if self.config.use_muon:
+                            for g in opt_adam.param_groups:
+                                g['lr'] = self.config.lr * 0.1
+
                 # Unified Formula: FM + RJF + Semantic + Cohesion + Compactness + Anchor + Inflation + Expansion + Collapse + Core + DarkEnergy
                 loss = (loss_fm + 0.1 * jacob_reg + 0.05 * loss_semantic + 
                         5.0 * loss_cohesion + 2.0 * loss_compact.mean() + 
@@ -2235,7 +2256,8 @@ class MaxFlowExperiment:
                 
                 # [v61.0 Fix] Minimum Effort Constraint
                 # 在 Step 800 之前，禁止 Early Stopping，強制進行全局探索
-                if step < 800: 
+                # [v62.8 Fix B] Overtime: Disable ES before Step 1000 unless already highly optimized
+                if step < 1000 and current_metric > -5.0: 
                     patience_counter = 0 
                 elif current_metric < best_metric - 0.001: # Finer threshold
                     best_metric = current_metric
