@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v60.2 MaxFlow (ICLR 2026 Golden Calculus Refined - CLI Hardening)"
+VERSION = "v60.3 MaxFlow (ICLR 2026 Golden Calculus Refined - The Final Polish)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -365,11 +365,11 @@ class PhysicsEngine:
             inv_sc_dist = sigma_ij.pow(2) / (dist_sq + self.current_alpha * sigma_ij.pow(2) + 1e-6)
             e_vdw = 0.15 * (inv_sc_dist.pow(6) - inv_sc_dist.pow(3))
             
-            # [v59.2/v59.5] Pauli Exclusion Principle (Nuclear Core Repulsion)
-            # Re-implement Nuclear Repulsion with clamping to prevent exp() explosion
-            # clamp dist to min 0.1 to avoid division by zero or infinite repulsion
-            safe_dist = torch.clamp(dist, min=0.1)
-            nuclear_repulsion = torch.exp(-20.0 * (safe_dist - 0.8)).sum(dim=(1,2))
+            # [v60.3 Fix] Nuclear Shield (Pauli Exclusion)
+            # Use aggressive LJ-12 repulsion for short range to prevent atom collapse (Godzilla Carbon)
+            # Potential wall at r < 0.8 A forces absolute separation.
+            r_safe = dist + 1e-6
+            nuclear_repulsion = 1000.0 * torch.clamp(0.8 / r_safe, min=1.0).pow(12).sum(dim=(1,2))
             
             # [v59.1 Fix] Attention-weighted Forces (Soft Distogram Simulation)
             attn_weights = F.softmax(-dist / 1.0, dim=-1) # (B, N, M)
@@ -1669,8 +1669,15 @@ class MaxFlowExperiment:
         q_L = nn.Parameter(torch.randn(B, N, device=device))    
         
         # Ligand Positions (Gaussian Cloud around Pocket)
-        # [v58.4 Fix] Tighter Funnel Initialization (3.0A noise) for precision alignment
-        noise = torch.randn(B, N, 3, device=device) * 3.0
+        # [v60.3 Fix] Adaptive Macro-Noise for Large Proteins/Ligands
+        # If the system is large (N > 50), expand search radius to 10.0A to ensure pocket discovery.
+        if N > 50:
+            noise_scale = 10.0
+            logger.info(f"   🌊 Macro-Noise active for large system (N={N}): 10.0A radius.")
+        else:
+            noise_scale = 3.0
+        
+        noise = torch.randn(B, N, 3, device=device) * noise_scale
         pos_L = (p_center.view(1, 1, 3) + noise).detach()
         pos_L.requires_grad = True
         q_L.requires_grad = True
@@ -1892,8 +1899,8 @@ class MaxFlowExperiment:
                             # Penalize miners with high valency loss (Illegal Miners)
                             with torch.no_grad():
                                 valency_err = self.phys.calculate_valency_loss(pos_L, x_L_final.view(B, N, -1)) # (B,)
-                                # Valid if error is low. 0.5 is a empirical threshold for "Reasonable structure"
-                                validly_mask = valency_err <= 0.5
+                                # [v60.3 Fix] Strict Valency Filter: Threshold tightened to 0.1 for zero-tolerance
+                                validly_mask = valency_err <= 0.1
                                 
                                 # If some miners are valid, force selection from valid ones by dropping others' score
                                 if validly_mask.any():
