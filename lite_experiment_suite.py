@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v62.9 MaxFlow (ICLR 2026 Golden Calculus Refined - Stability Hotfix III)"
+VERSION = "v63.0 MaxFlow (ICLR 2026 Golden Calculus Refined - The Unified Field)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -335,9 +335,9 @@ class PhysicsEngine:
         # 乘上一個係數讓梯度足夠大
         return -10.0 * gauss_term.sum(dim=(1, 2))
 
-    def compute_energy(self, pos_L, pos_P, q_L, q_P, x_L, x_P, step_progress=0.0, clan_params=None):
+    def compute_energy(self, pos_L, pos_P, q_L, q_P, x_L, x_P, step_progress=0.0):
         """
-        v62.6: The Great Comparison (Clan-Aware Hybrid Schedule)
+        v63.0: The Unified Field (Sigmoidal Crossfade Hybrid)
         [v59.5] FP32 Sanctuary. 
         Forces physics calculation in float32 to prevent NaN in gradients under FP16.
         """
@@ -358,64 +358,52 @@ class PhysicsEngine:
             pos_L_aligned = pos_L - joint_com
             pos_P_aligned = pos_P - joint_com
 
-            # [v62.6] Clan Parameter Unpacking
-            # clan_params: (B, 3) -> [transition_point, sigma_start, radius_start]
-            if clan_params is None:
-                clan_params = torch.tensor([[0.5, 5.0, 0.6]], device=pos_L.device).repeat(B, 1)
+            # [v63.0] Sigmoidal Blending (Crossfade Logic)
+            # Center the transition at 60% with a sharpness of 15
+            w_sigmoid = torch.sigmoid(torch.tensor(15.0 * (step_progress - 0.6), device=pos_L.device))
             
-            t_point = clan_params[:, 0]
-            sig_start = clan_params[:, 1]
-            rad_start = clan_params[:, 2]
-
-            # Determine mask: (B,)
-            in_phase1 = (step_progress < t_point).float()
-            in_phase2 = 1.0 - in_phase1
-
-            # -----------------------------------------------------------
-            # Phase 1: 高斯平滑 (Gaussian Smoothing)
-            # -----------------------------------------------------------
-            # Normalize progress within phase 1: from 0.0 to 1.0
-            p1_progress = torch.clamp(step_progress / (t_point + 1e-6), 0.0, 1.0)
-            current_sigma = sig_start - (sig_start - 1.0) * p1_progress
+            # --- Field 1: Gaussian Smoothing ---
+            # Sigma 從 5.0 (模糊) 降到 1.0 (精確)
+            current_sigma = 5.0 - 4.0 * step_progress
+            e_gauss = self.compute_gaussian_energy(pos_L_aligned, pos_P_aligned, sigma=current_sigma)
             
-            e_gauss = self.compute_gaussian_energy(pos_L_aligned, pos_P_aligned, sigma=current_sigma.view(B, 1, 1))
+            # 佔位力場: 前期強 (5.0)，後期弱 (1.0)
+            suction_weight = 5.0 * (1.0 - w_sigmoid) + 1.0 * w_sigmoid
             center_dist = torch.norm(pos_L_aligned.mean(dim=1), dim=-1)
-            e_suction = 1.0 * center_dist.pow(2)
+            e_suction = suction_weight * center_dist.pow(2)
 
-            # -----------------------------------------------------------
-            # Phase 2: 幽靈顯形 (Ghost Materialization)
-            # -----------------------------------------------------------
-            # Normalize progress within phase 2: from 0.0 to 1.0
-            p2_progress = torch.clamp((step_progress - t_point) / (1.0 - t_point + 1e-6), 0.0, 1.0)
-            radius_scale = rad_start + (0.9 - rad_start) * p2_progress
+            # --- Field 2: Ghost Materialization (LJ) ---
+            # [v63.0 Stability] Radius softens starting from 0.3x to prevent NaN at Step 840
+            radius_scale = 0.3 + 0.6 * step_progress # 0.3 -> 0.9
             
             type_probs_L = x_L[..., :9]
-            radii_L = (type_probs_L @ self.params.vdw_radii[:9].float()) * radius_scale.view(B, 1)
+            radii_L = (type_probs_L @ self.params.vdw_radii[:9].float()) * radius_scale
             
             if x_P.dim() == 2: x_P = x_P.unsqueeze(0)
             prot_radii_map = self.params.prot_radii_map.to(pos_P.device)
-            radii_P = (x_P[..., :4] @ prot_radii_map) * radius_scale.view(B, 1)
+            radii_P = (x_P[..., :4] @ prot_radii_map) * radius_scale
             sigma_ij = radii_L.unsqueeze(-1) + radii_P.unsqueeze(1)
             
             dists = torch.cdist(pos_L_aligned, pos_P_aligned)
             inv_sc_dist = sigma_ij / (dists + 1e-6)
             
             e_vdw = 1.0 * (inv_sc_dist.pow(12) - 2.0 * inv_sc_dist.pow(6))
-            e_soft_p2 = e_vdw.sum(dim=(1, 2))
+            e_lj = e_vdw.sum(dim=(1, 2))
             
-            # Nuclear Shield
+            # Nuclear Shield (慢慢顯現)
             r_safe = torch.clamp(dists, min=0.5)
-            w_nuc = 0.1 * p2_progress 
+            w_nuc = 0.1 * w_sigmoid 
             nuclear_repulsion = w_nuc * (0.6 / r_safe).pow(12).sum(dim=(1, 2))
             
+            # Clash definition for Market-Flow
             e_clash = (dists < sigma_ij * 0.6).float().sum(dim=(1, 2))
-            current_alpha = 5.0 * (1.0 - p2_progress) + 0.1
+            
+            # Alpha Annealing (5.0 -> 0.1)
+            current_alpha = 5.0 * (1.0 - step_progress) + 0.1
 
-            # -----------------------------------------------------------
-            # Final Merge
-            # -----------------------------------------------------------
-            e_total = in_phase1 * (e_gauss + e_suction) + in_phase2 * (e_soft_p2 + nuclear_repulsion)
-            return e_total, e_clash * in_phase2, in_phase1 * 5.0 + in_phase2 * current_alpha
+            # --- Final Unified Field Sum ---
+            e_total = (1.0 - w_sigmoid) * (e_gauss + e_suction) + w_sigmoid * (e_lj + nuclear_repulsion)
+            return e_total, e_clash * w_sigmoid, current_alpha
 
     # --- SECTION 4: SCIENTIFIC METRICS (ICLR RIGOUR) ---
     def calculate_valency_loss(self, pos_L, x_L):
@@ -1705,20 +1693,6 @@ class MaxFlowExperiment:
         x_L = nn.Parameter(torch.randn(B, N, D, device=device)) 
         q_L = nn.Parameter(torch.randn(B, N, device=device))    
         
-        # [v62.6] Clan Initialization: Five Schedules for Comparison
-        # Parameters: [transition_point, sigma_start, radius_start]
-        clan_configs = torch.tensor([
-            [0.7, 10.0, 0.4], # C1: Smooth Tunnel (Long Gaussian)
-            [0.3, 3.0, 0.7],  # C2: Precision Snapper (Short Gaussian)
-            [0.5, 5.0, 0.5],  # C3: Ghost Specialist (Balanced)
-            [0.6, 7.0, 0.6],  # C4: Liquid Drifter (Fluid)
-            [0.1, 2.0, 0.8]   # C5: Hard Grounding (Early Physical)
-        ], device=device)
-        
-        # Segment batch into 5 clans
-        clan_idx = (torch.arange(B, device=device) // (max(1, B // 5))) % 5
-        clan_params = clan_configs[clan_idx] # (B, 3)
-
         # Ligand Positions (Gaussian Cloud around Pocket)
         # [v60.6 SOTA] Heterogeneous Miner Genesis (The Darwinian Swarm)
         # 0.0 = 保守派 (精修工), 1.0 = 激進派 (探險家)
@@ -1981,9 +1955,7 @@ class MaxFlowExperiment:
                             _, bottom_indices = torch.topk(market_scores, k=4, largest=False)
                             
                             valid_count = validly_mask.sum().item()
-                            # [v62.6] Log the winning clan proxy (Transition point * 10)
-                            winning_clan = (clan_params[top_indices[0], 0] * 10).long().item()
-                            logger.info(f"   ⚖️  [Market-Flow] {valid_count}/{B} Valid | Winner Clan: {winning_clan} | Survivors: {top_indices.tolist()}")
+                            logger.info(f"   ⚖️  [Market-Flow] {valid_count}/{B} Valid | Survivors: {top_indices.tolist()}")
                             
                             # Clone survivors + Mutate (Stochastic Noise)
                             for i in range(4):
@@ -1993,7 +1965,6 @@ class MaxFlowExperiment:
                                 pos_L.data[dst_idx] = pos_L.data[src_idx] + torch.randn_like(pos_L[dst_idx]) * (0.5 * (1.0 - progress))
                                 q_L.data[dst_idx] = q_L.data[src_idx].detach().clone()
                                 x_L.data[dst_idx] = x_L.data[src_idx].detach().clone()
-                                clan_params[dst_idx] = clan_params[src_idx].clone() # [v62.6] Propagate Clan Genes
                                 
                                 # [v60.6] The Viral Update (Parameter Infection)
                                 # 這是演化算法的核心：強者的基因會統治種群
@@ -2055,8 +2026,7 @@ class MaxFlowExperiment:
                 
                 # Hierarchical Engine Call
                 e_soft, e_hard, alpha = self.phys.compute_energy(pos_L_reshaped, pos_P_batched, q_L, q_P_batched, 
-                                                                 x_L, x_P_batched, step_progress=step / self.config.steps,
-                                                                 clan_params=clan_params)
+                                                                 x_L, x_P_batched, step_progress=step / self.config.steps)
                 # Internal Geometry (Bonds & Angles)
                 e_bond = self.phys.calculate_internal_geometry_score(pos_L_reshaped) 
                 
@@ -2294,13 +2264,6 @@ class MaxFlowExperiment:
                 
                 # [STABILITY] Early Stopping
             
-            # Keep log (v58.1)
-            if step % 10 == 0:
-                history_E.append(loss.item())
-                if step % 100 == 0:
-                    e_min = batch_energy.min().item()
-                    alpha_val = alpha.mean().item() if torch.is_tensor(alpha) else alpha
-                    logger.info(f"   Step {step}: Loss={loss.item():.2f}, E_min={e_min:.2f}, Alpha={alpha_val:.3f}")
 
             # [v58.1] Rewards definition for reporting
             rewards = -batch_energy.detach()
