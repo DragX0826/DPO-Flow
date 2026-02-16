@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v62.0 MaxFlow (ICLR 2026 Golden Calculus Refined - The Scientific Frontier)"
+VERSION = "v62.1 MaxFlow (ICLR 2026 Golden Calculus Refined - Coordinated Entry)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -338,16 +338,9 @@ class PhysicsEngine:
             dist = torch.sqrt(dist_sq + 1e-9)
             
             # 2. Van der Waals Param Retrieval
-            # [Smart Method 3] Radius Annealing Schedule (v62.0)
-            # 0% -> 50%: 半徑 = 0.5 (幽靈模式，穿牆尋找深口袋)
-            # 50% -> 80%: 半徑 = 0.8 (軟接觸，調整姿勢)
-            # 80% -> 100%: 半徑 = 1.0 (硬接觸，真實物理評分)
-            if step_progress < 0.5:
-                radius_scale = 0.5
-            elif step_progress < 0.8:
-                radius_scale = 0.8
-            else:
-                radius_scale = 1.0 # 最後階段回歸真實物理尺寸
+            # [Smart Method 3] Radius Annealing Schedule (v62.1)
+            # [v62.1 Fix] Optimized Ghost Scale (0.5 -> 0.8) for better rigid penetration
+            radius_scale = 0.5 + 0.3 * step_progress 
             
             type_probs_L = x_L[..., :9]
             radii_L = (type_probs_L @ self.params.vdw_radii[:9].float()) * radius_scale
@@ -397,13 +390,22 @@ class PhysicsEngine:
             # 4. Hard Energy (Severe Clashes)
             e_clash = torch.relu(sigma_ij - dist).pow(2).sum(dim=(1, 2))
             
+            # [v62.1 Fix] Center-of-Mass Suction (Coordinated Entry)
+            # Pulls ligand as a whole ship towards the harbor center, preventing atom-wise collapse.
+            # 1. Compute COM in aligned space (B, 1, 3)
+            current_com = pos_L_aligned.mean(dim=1, keepdim=True)
+            # 2. Compute distance from COM to center (which is 0 in aligned space) (B, 1)
+            dist_com_to_center = torch.norm(current_com, dim=-1) # (B, 1)
+            # 3. Apply suction force on the global translation
+            e_suction = 5.0 * dist_com_to_center.pow(2).squeeze() # (B,)
+
             # [v61.9 Fix] Staged Optimization
             if step_progress < 0.3:
                 # Phase 1: Explosion (Only repulsion/clashes to push atoms apart)
-                return nuclear_repulsion + e_clash * 10.0, e_clash, self.current_alpha
+                return nuclear_repulsion + e_clash * 10.0 + e_suction, e_clash, self.current_alpha
             else:
                 # Phase 2: Binding (Enable attraction and final seating)
-                return e_soft + nuclear_repulsion + e_clash, e_clash, self.current_alpha
+                return e_soft + nuclear_repulsion + e_clash + e_suction, e_clash, self.current_alpha
 
     # --- SECTION 4: SCIENTIFIC METRICS (ICLR RIGOUR) ---
     def calculate_valency_loss(self, pos_L, x_L):
@@ -1749,10 +1751,10 @@ class MaxFlowExperiment:
         # 激進派搜索範圍極大 (25.0A)，保守派只在中心附近 (2.0A)
         noise_scales = 2.0 + miner_genes.view(B, 1, 1) * 23.0 # Range: [2.0, 25.0]
         
-        # 2. 幾何剛性基因 (Geometric Stiffness)
-        # [v61.7 Fix] Liquid State: 允許鍵長在初期極度壓縮，以通過瓶頸
-        # Range: [1.0, 0.01] (從普通軟 到 液體)
-        bond_factors = 1.0 - 0.99 * miner_genes
+        # [v62.1 Fix] Rigidify Skeleton (Coordinated Entry)
+        # Since we use COM suction, we can keep the ligand rigid to explore as a whole.
+        # Range: [1.0, 2.0] (Solid to Extra-Rigid)
+        bond_factors = 1.0 + 1.0 * miner_genes
 
         # [v62.0 SOTA] Curvature-Guided Cascade Initialization
         # 如果不是 Redocking，使用幾何先驗搜索口袋中心
