@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v61.2 MaxFlow (ICLR 2026 Golden Calculus Refined - Breach & Embed)"
+VERSION = "v61.3 MaxFlow (ICLR 2026 Golden Calculus Refined - Infiltration & Lockdown)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -246,7 +246,8 @@ class ForceFieldParameters:
     """
     def __init__(self):
         # Atomic Radii (Angstroms) for C, N, O, S, F, P, Cl, Br, I
-        self.vdw_radii = torch.tensor([1.7, 1.55, 1.52, 1.8, 1.47, 1.8, 1.75, 1.85, 1.98], device=device)
+        # [v61.3 Fix] Atomic Shrinkage (0.85x) to allow Induced Fit packing
+        self.vdw_radii = torch.tensor([1.7, 1.55, 1.52, 1.8, 1.47, 1.8, 1.75, 1.85, 1.98], device=device) * 0.85
         # Epsilon (Well depth, kcal/mol)
         self.epsilon = torch.tensor([0.1, 0.1, 0.15, 0.2, 0.1, 0.2, 0.2, 0.2, 0.3], device=device)
         # [v57.0] Standard Valencies for C, N, O, S, F, P, Cl, Br, I
@@ -364,19 +365,21 @@ class PhysicsEngine:
             
             # vdW
             inv_sc_dist = sigma_ij.pow(2) / (dist_sq + self.current_alpha * sigma_ij.pow(2) + 1e-6)
-            # [v61.2 Fix] Stronger Glue: increase VdW weight for deeper penetration
-            e_vdw = 1.0 * (inv_sc_dist.pow(6) - inv_sc_dist.pow(3))
+            # [v61.3 Fix] Hyper-Attraction (10.0): "Vacuum Suction" into global minimum
+            e_vdw = 10.0 * (inv_sc_dist.pow(6) - inv_sc_dist.pow(3))
             
             # [v60.5 Fix] Safe Nuclear Shield
             # Prevent NaN by clamping minimum distance for repulsion calculation
-            r_safe = torch.clamp(dist, min=0.6) # Clamp at 0.6A
+            # [v61.3 Fix] Deep Penetration Clamp (0.4A)
+            r_safe = torch.clamp(dist, min=0.4) 
             
             # [v61.2 Fix] Softer Shield Start: Allow early-stage penetration
             # Ramp up weight: 0.1 (start) -> 1000.0 (end) with cubic ramp
             w_nuc = 0.1 + 999.9 * (step_progress**3) 
             
             # Calculate repulsion but clamp the MAXIMUM energy value
-            raw_repulsion = (0.8 / r_safe).pow(12)
+            # [v61.3 Fix] Deep Shield Cutoff (0.5A)
+            raw_repulsion = (0.5 / r_safe).pow(12)
             clamped_repulsion = torch.clamp(raw_repulsion, max=1e4) # Cap at 10,000 kcal/mol per atom pair
             
             nuclear_repulsion = w_nuc * clamped_repulsion.sum(dim=(1,2))
