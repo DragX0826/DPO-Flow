@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v63.2 MaxFlow (ICLR 2026 Golden Calculus Zenith - The Inflationary Universe Strategy)"
+VERSION = "v63.3 MaxFlow (ICLR 2026 Golden Calculus Zenith - The Artifact Strategy)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -413,8 +413,15 @@ class PhysicsEngine:
             # This provides a stable, non-stiff linear repulsion to drive expansion.
             e_pauli = torch.relu(sigma_ij - dist).sum(dim=(1, 2)) 
             
-            # Final Energy Synthesis with Heavy Pauli Weight (100.0)
-            return e_soft + nuclear_repulsion + e_suction + 100.0 * e_pauli, e_pauli, self.current_alpha
+            # [v63.3 Fix A] The Artifact: Absolute Exclusion Barrier
+            # Direct quadratic penalty for any atom pair (bonded or not) < 1.3A.
+            # This is an engineered wall that refuses to be ignored by the optimizer.
+            # We calculate this per batch element (B,) to enable per-miner survival.
+            e_artifact = 1000.0 * torch.relu(1.3 - dist).pow(2)
+            e_artifact = e_artifact.sum(dim=(1, 2)) # (B,)
+            
+            # Final Energy Synthesis with Artifact Penalty
+            return e_soft + nuclear_repulsion + e_suction + 100.0 * e_pauli + e_artifact, e_pauli, self.current_alpha
 
     # --- SECTION 4: SCIENTIFIC METRICS (ICLR RIGOUR) ---
     def calculate_valency_loss(self, pos_L, x_L):
@@ -1603,6 +1610,8 @@ class MaxFlowExperiment:
         ff_params.softness_start = config.softness_start
         ff_params.softness_end = config.softness_end
         self.phys = PhysicsEngine(ff_params)
+        # [v63.3 Fix B] Hard Ball Mode: Initialize with ultra-low alpha to refuse overlap
+        self.phys.current_alpha = 0.01
         self.visualizer = PublicationVisualizer()
         self.results = []
         
@@ -1951,15 +1960,15 @@ class MaxFlowExperiment:
                                 # [v60.3 Fix] Strict Valency Filter: Threshold tightened to 0.1 for zero-tolerance
                                 validly_mask = valency_err <= 0.1
                                 
-                            # [v63.2 Fix B] Inflationary Market Logic
+                            # [v63.2 Fix B] Inflationary Market Logic (Kept for v63.3 to assist Artifact)
                             if step < 300:
                                 # Reward expansion (Spread) during early phase
                                 centroids_m = pos_L.mean(dim=1, keepdim=True)
                                 spread = (pos_L - centroids_m).norm(dim=-1).mean(dim=1) # (B,)
                                 market_scores = spread
-                                logger.info(f"   📈 [Inflation Market] Rewarding Expansion. Max Spread: {spread.max().item():.2f}")
+                                logger.info(f"   📈 [Artifact Market] Rewarding Spread. Max: {spread.max().item():.2f}")
                             else:
-                                # Reward low energy and diversity later
+                                # Reward low energy (which now includes 1000x artifact penalty)
                                 if validly_mask.any():
                                     market_base_scores = -batch_energy.clone()
                                     market_base_scores[~validly_mask] -= 1e6 # "Massive Fine" for illegal miners
@@ -2030,20 +2039,17 @@ class MaxFlowExperiment:
                 q_P_batched = q_P_sub.unsqueeze(0).repeat(B, 1)
                 x_P_batched = x_P_sub.unsqueeze(0).repeat(B, 1, 1)
                 
-                # [v60.5 Fix] Alpha Rescue Logic (Auto-Softening)
-                # If average energy exceeds 1000, soften the manifold to avoid crashes
-                # [v61.7 Fix] Strict Rescue Ban: 只在前 80% 的步驟允許救援，最後階段必須硬著陸
-                if batch_energy.mean() > 1000.0 and step < self.config.steps * 0.8:
-                    self.phys.current_alpha = max(self.phys.current_alpha, 2.0)
-                    if step % 10 == 0:
-                        logger.info(f"   🛡️  [Alpha-Rescue] High Energy ({batch_energy.mean():.1f}) detect, softening alpha=2.0")
+                # [v63.3 Fix B] Alpha Rescue Logic (Disabled for Artifact Strategy)
+                # if batch_energy.mean() > 1000.0 and step < self.config.steps * 0.8:
+                #     self.phys.current_alpha = max(self.phys.current_alpha, 2.0)
+                #     if step % 10 == 0:
+                #         logger.info(f"   🛡️  [Alpha-Rescue] High Energy ({batch_energy.mean():.1f}) detect, softening alpha=2.0")
                 
-                # [v61.7 Fix] Terminal Polishing (The Ghost Protocol)
-                # 延長到最後 150 步，強制鎖死 Alpha=0.1 並關閉噪聲
-                if step >= self.config.steps - 150:
-                    self.phys.current_alpha = 0.1
-                    if step % 50 == 0:
-                        logger.info("   💎 [The Ghost Protocol] Terminal Polishing: Alpha=0.1, Noise=0")
+                # [v63.3 Fix B] Terminal Polishing (Disabled Alpha Softening)
+                # if step >= self.config.steps - 150:
+                #     self.phys.current_alpha = 0.1
+                #     if step % 50 == 0:
+                #         logger.info("   💎 [The Ghost Protocol] Terminal Polishing: Alpha=0.1, Noise=0")
                 
                 # Hierarchical Engine Call
                 e_soft, e_hard, alpha = self.phys.compute_energy(pos_L_reshaped, pos_P_batched, q_L, q_P_batched, 
@@ -2056,13 +2062,13 @@ class MaxFlowExperiment:
                 # Lower weights (100.0/10.0 instead of 500/50) to prevent "Hardening too fast"
                 # [v61.5 Fix] Liquid State (The Fluid Swarm): Zero stiffness for first 50%
                 # This allows perfect induced fit before freezing the conformation.
-                # [v63.2 Fix A] Unchain the Bonds: Early zero-stiffness for expansion
+                # [v63.3 Fix C] Steel Bonds: Maximum structural stiffness
                 if progress < 0.25:
-                    w_bond_base = 0.0 # Allow e_pauli to dominate without being pulled back
+                    w_bond_base = 50.0 # Small slack for the initial "Artifact Explosion"
                 else:
-                    # Ramp up w_bond_base quickly after 25% progress
+                    # Ramp up to massive w_bond_base
                     adj_progress = (progress - 0.25) / 0.75
-                    w_bond_base = 10.0 + 190.0 * (adj_progress ** 2)
+                    w_bond_base = 500.0 + 500.0 * (adj_progress ** 2)
                 
                 w_hard = 1.0 + (10.0 - 1.0) * (progress ** 1.5)
                 
@@ -2085,14 +2091,13 @@ class MaxFlowExperiment:
                 # [v59.2 Fix] Use Direction-Preserving Soft-Clip instead of Hard Clamp
                 v_target = self.phys.soft_clip_vector(force_total.detach(), max_norm=20.0)
                 
-                # Update Annealing based on Force Magnitude
-                f_mag = v_target.norm(dim=-1).mean().item()
-                self.phys.update_alpha(f_mag)
+                # [v63.3 Fix B] No More Softness: Disabling dynamic alpha update
+                # We from now on use Alpha=0.01 from Step 0 onwards.
+                # f_mag = v_target.norm(dim=-1).mean().item()
+                # self.phys.update_alpha(f_mag)
                 
-                # [v63.2 Fix C] Forced Cooling for final crystallization
-                if progress > 0.8:
-                    target_alpha_force = 0.01
-                    self.phys.current_alpha = self.phys.current_alpha * 0.9 + target_alpha_force * 0.1
+                # [v63.2 Fix C] Forced Cooling (Now absolute for v63.3)
+                self.phys.current_alpha = 0.01
                 
                 # The Golden Triangle Loss
                 # Pillar 1: Physics-Flow Matching (v58.6: Huber Loss for outlier robustness)
