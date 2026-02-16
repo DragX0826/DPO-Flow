@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v62.9 MaxFlow (ICLR 2026 Golden Calculus Refined - True North Refinement)"
+VERSION = "v63.0 MaxFlow (ICLR 2026 Golden Calculus Zenith - The Ideal Gas Strategy)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -247,7 +247,7 @@ class ForceFieldParameters:
     def __init__(self):
         # Atomic Radii (Angstroms) for C, N, O, S, F, P, Cl, Br, I
         # [v61.6 Fix] Extreme Atomic Shrinkage (0.80x) to allow high-density biological packing
-        self.vdw_radii = torch.tensor([1.7, 1.55, 1.52, 1.8, 1.47, 1.8, 1.75, 1.85, 1.98], device=device) * 0.80
+        self.vdw_radii = torch.tensor([1.7, 1.55, 1.52, 1.8, 1.47, 1.8, 1.75, 1.85, 1.98], device=device) 
         # Epsilon (Well depth, kcal/mol)
         self.epsilon = torch.tensor([0.1, 0.1, 0.15, 0.2, 0.1, 0.2, 0.2, 0.2, 0.3], device=device)
         # [v57.0] Standard Valencies for C, N, O, S, F, P, Cl, Br, I
@@ -345,10 +345,9 @@ class PhysicsEngine:
             dist_sq = diff.pow(2).sum(dim=-1)
             dist = torch.sqrt(dist_sq + 1e-9)
             
-            # 2. Van der Waals Param Retrieval
-            # [v61.7 SOTA Logic] Variable Atomic Radii (The Ghost Protocol)
-            # 初期原子很小(0.5x)，允許鑽進深口袋；後期變大(0.9x)，產生正確的 VdW 接觸
-            radius_scale = 0.5 + 0.4 * step_progress # 0.5 -> 0.9
+            # [v63.0 Ideal Gas] Accelerated Expansion: Reach physical scale 1.0x faster
+            # 初期原子小(0.5x)，允許鑽進深口袋；中期快速變大(1.0x)，產生正確的 VdW 接觸
+            radius_scale = 0.5 + 0.5 * (step_progress ** 0.5) # 0.5 -> 1.0 (Sqrt growth)
             
             type_probs_L = x_L[..., :9]
             radii_L = (type_probs_L @ self.params.vdw_radii[:9].float()) * radius_scale
@@ -396,10 +395,9 @@ class PhysicsEngine:
             
             nuclear_repulsion = w_nuc * clamped_repulsion.sum(dim=(1,2))
             
-            # [v61.4 Fix] Centripetal Suction (Solvent Exclusion Proxy)
-            # Pulls ligand atoms towards the joint pocket center to force occupancy
-            dist_to_center = torch.norm(pos_L_aligned, dim=-1) # (B, N)
-            e_suction = 0.5 * dist_to_center.pow(2).mean(dim=-1) # (B,)
+            # [v63.0 Ideal Gas] Vacuum Released
+            # We already have external loss_traction; internal suction is zeroed to allow repulsion to dominate.
+            e_suction = torch.zeros(pos_L.shape[0], device=pos_P.device) 
             
             # [v59.1 Fix] Attention-weighted Forces (Soft Distogram Simulation)
             attn_weights = F.softmax(-dist / 1.0, dim=-1) # (B, N, M)
