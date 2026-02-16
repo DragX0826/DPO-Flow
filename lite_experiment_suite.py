@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v62.2 MaxFlow (ICLR 2026 Golden Calculus Refined - Goldilocks Relaxation Strategy)"
+VERSION = "v62.3 MaxFlow (ICLR 2026 Golden Calculus Refined - Ghost Infiltration Protocol)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -278,7 +278,8 @@ class PhysicsEngine:
         self.params = ff_params
         # [v58.1] Golden Calculus: Force-Magnitude Annealing
         self.current_alpha = self.params.softness_start
-        self.hardening_rate = 0.1 
+        # [v62.3 Fix C] Slower Annealing for better infiltration
+        self.hardening_rate = 0.05 
         self.max_force_ema = 1.0 # [v58.1] Normalize decay rate
 
     def reset_state(self):
@@ -2046,7 +2047,8 @@ class MaxFlowExperiment:
                 # [v60.5 Fix] Alpha Rescue Logic (Auto-Softening)
                 # If average energy exceeds 1000, soften the manifold to avoid crashes
                 # [v61.7 Fix] Strict Rescue Ban: 只在前 80% 的步驟允許救援，最後階段必須硬著陸
-                if batch_energy.mean() > 1000.0 and step < self.config.steps * 0.8:
+                # [v62.3 Fix C] Higher Rescue Threshold (2000) to allow hard-pocket entry
+                if batch_energy.mean() > 2000.0 and step < self.config.steps * 0.8:
                     self.phys.current_alpha = max(self.phys.current_alpha, 2.0)
                     if step % 10 == 0:
                         logger.info(f"   🛡️  [Alpha-Rescue] High Energy ({batch_energy.mean():.1f}) detect, softening alpha=2.0")
@@ -2124,25 +2126,27 @@ class MaxFlowExperiment:
                 loss_cohesion = torch.relu(min_neighbor_dist - 1.6).pow(2).mean()
 
                 # [v62.1 Fix A] Radius of Gyration (Rg) Penalty: Compactness
-                # [v62.2 Fix A] Relaxed Mold: Threshold 4.0 -> 5.5, weight 10.0 -> 2.0
+                # [v62.3 Fix A] Delayed Compactness: Only active after 500 steps
                 center_of_mass = pos_L_reshaped.mean(dim=1, keepdim=True)
                 dist_to_com = (pos_L_reshaped - center_of_mass).norm(dim=-1)
                 rg = torch.sqrt(dist_to_com.pow(2).mean(dim=-1))
-                loss_compact = torch.relu(rg - 5.5).pow(2)
+                loss_compact = torch.zeros(1, device=device)
+                if step > 500:
+                    loss_compact = torch.relu(rg - 5.5).pow(2)
 
-                # [v62.2 Fix B] Pocket Magnet: Spatial Guidance in Stage 1
-                loss_magnet = torch.tensor(0.0, device=device)
-                if progress < 0.5:
-                    loss_magnet = (pos_L_reshaped.mean(dim=1) - p_center).norm(dim=-1).mean()
+                # [v62.3 Fix B] Tractor Beam: Persistent Harmonic Anchor
+                # Pulls molecule center towards pocket center without stage limit.
+                anchor_weight = 10.0 * (1.0 - progress)
+                loss_anchor = anchor_weight * (pos_L_reshaped.mean(dim=1) - p_center).norm(dim=-1).mean()
 
                 # [v62.2 Fix C] Bond Expansion: Prevent Over-compression
                 # If nearest neighbor < 1.4A,施加推力把它推回 1.5A
                 loss_expansion = torch.relu(1.5 - min_neighbor_dist).pow(2).mean()
 
-                # Unified Formula: FM + RJF + Semantic + Cohesion + Compactness + Magnet + Expansion
+                # Unified Formula: FM + RJF + Semantic + Cohesion + Compactness + Anchor + Expansion
                 loss = (loss_fm + 0.1 * jacob_reg + 0.05 * loss_semantic + 
                         5.0 * loss_cohesion + 2.0 * loss_compact.mean() + 
-                        5.0 * loss_magnet + 20.0 * loss_expansion)
+                        loss_anchor + 20.0 * loss_expansion)
 
                 # [v59.5 Fix] NaN Sentry inside the loop
                 # Check for NaNs immediately after backward
