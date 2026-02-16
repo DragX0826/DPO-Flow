@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v62.5 MaxFlow (ICLR 2026 Golden Calculus Refined - The Trojan Horse Strategy)"
+VERSION = "v62.6 MaxFlow (ICLR 2026 Golden Calculus Refined - The Nuclear Option)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -2060,22 +2060,24 @@ class MaxFlowExperiment:
                     if step % 50 == 0:
                         logger.info("   💎 [The Ghost Protocol] Terminal Polishing: Alpha=0.1, Noise=0")
                 
-                # [v62.5 Fix B] Trojan Teleport: Reset stuck miners at Step 150
-                if step == 150:
+                # [v62.6 Fix A] The Nuclear Option: Hard Coordinate Reset at Step 200
+                if step == 200:
                     with torch.no_grad():
-                        current_centroids = pos_L_reshaped.mean(dim=1) # (B, 3)
-                        current_rmsd = (current_centroids - p_center).norm(dim=-1) # (B,)
-                        stuck_mask = current_rmsd > 5.0
-                        if stuck_mask.any():
-                            logger.info(f"   🐴 [Trojan Horse] Teleporting {stuck_mask.sum().item()} stuck miners to pocket center.")
-                            # Step 1:归零位置到口袋中心
-                            # Step 2:強制膨脹 (Reset Int-RMSD)
-                            stuck_pos = pos_L_reshaped[stuck_mask]
-                            rel_pos = stuck_pos - current_centroids[stuck_mask].unsqueeze(1)
-                            # Normalize direction and multiply by 3.0A cloud radius
-                            pos_L_reshaped.data[stuck_mask] = p_center.view(1, 1, 3) + (rel_pos / (rel_pos.norm(dim=-1, keepdim=True) + 1e-6)) * 3.0
-                            # Add a bit of noise
-                            pos_L_reshaped.data[stuck_mask] += torch.randn_like(pos_L_reshaped.data[stuck_mask]) * 0.2
+                        # Calculate current Rg
+                        center = pos_L_reshaped.mean(dim=1, keepdim=True)
+                        vecs = pos_L_reshaped - center
+                        rg_current = torch.sqrt(vecs.pow(2).sum(-1).mean(-1)) # (B,)
+                        
+                        # Find collapsed miners (Rg < 3.0A)
+                        collapsed_mask = rg_current < 3.0
+                        if collapsed_mask.any():
+                            logger.info(f"   ☢️  [Nuclear Option] Detonating {collapsed_mask.sum().item()} collapsed pebbles.")
+                            # Forceful expansion: push atoms to 3.0-4.0A from centroid
+                            stuck_vecs = vecs[collapsed_mask]
+                            dirs = stuck_vecs / (stuck_vecs.norm(dim=-1, keepdim=True) + 1e-6)
+                            # New lengths: 3.0 + random noise (3.0-4.0A)
+                            new_lengths = 3.0 + torch.rand(stuck_vecs.shape[0], stuck_vecs.shape[1], 1, device=device) * 1.0
+                            pos_L_reshaped.data[collapsed_mask] = center[collapsed_mask] + dirs * new_lengths
                 
                 # Hierarchical Engine Call
                 e_soft, e_hard, alpha = self.phys.compute_energy(pos_L_reshaped, pos_P_batched, q_L, q_P_batched, 
@@ -2121,7 +2123,8 @@ class MaxFlowExperiment:
                 # The Golden Triangle Loss
                 # Pillar 1: Physics-Flow Matching (v58.6: Huber Loss for outlier robustness)
                 # [v62.5 Fix C] Mute the NN: Scale FM loss weight over first 200 steps
-                fm_weight = min(1.0, step / 200.0)
+                # [v62.6 Fix B] NN Lobotomy: Early steps ( < 200 ) FM weight = 0.0
+                fm_weight = 0.0 if step < 200 else 1.0
                 loss_fm = fm_weight * F.huber_loss(v_pred, v_target, delta=1.0)
                 
                 # Pillar 2: Geometric Smoothing (RJF)
@@ -2143,6 +2146,10 @@ class MaxFlowExperiment:
                 dist_matrix = torch.cdist(pos_L, pos_L) + torch.eye(N, device=device).unsqueeze(0) * 10.0
                 min_neighbor_dist = dist_matrix.min(dim=-1)[0] # (B, N)
                 loss_cohesion = torch.relu(min_neighbor_dist - 1.6).pow(2).mean()
+
+                # [v62.6 Fix C] Hard Sphere Core: Absolute Repulsion for d < 1.2A
+                # Massive repulsion term to block internal collapse
+                loss_core = 1000.0 * torch.relu(1.2 - dist_matrix).mean()
 
                 # [v62.1 Fix A] Radius of Gyration (Rg) Penalty: Compactness
                 # [v62.3 Fix A] Delayed Compactness: Only active after 500 steps
@@ -2176,11 +2183,11 @@ class MaxFlowExperiment:
                 # If nearest neighbor < 1.4A,施加推力把它推回 1.5A
                 loss_expansion = torch.relu(1.5 - min_neighbor_dist).pow(2).mean()
 
-                # Unified Formula: FM + RJF + Semantic + Cohesion + Compactness + Anchor + Inflation + Expansion + Collapse
+                # Unified Formula: FM + RJF + Semantic + Cohesion + Compactness + Anchor + Inflation + Expansion + Collapse + Core
                 loss = (loss_fm + 0.1 * jacob_reg + 0.05 * loss_semantic + 
                         5.0 * loss_cohesion + 2.0 * loss_compact.mean() + 
                         loss_anchor + loss_inflation + 20.0 * loss_expansion +
-                        50.0 * loss_collapse)
+                        50.0 * loss_collapse + loss_core)
 
                 # [v59.5 Fix] NaN Sentry inside the loop
                 # Check for NaNs immediately after backward
