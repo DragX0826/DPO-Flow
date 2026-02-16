@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v61.6 MaxFlow (ICLR 2026 Golden Calculus Refined - Micro-Annealing)"
+VERSION = "v61.7 MaxFlow (ICLR 2026 Golden Calculus Refined - The Ghost Protocol)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -346,11 +346,15 @@ class PhysicsEngine:
             dist = torch.sqrt(dist_sq + 1e-9)
             
             # 2. Van der Waals Param Retrieval
+            # [v61.7 SOTA Logic] Variable Atomic Radii (The Ghost Protocol)
+            # 初期原子很小(0.5x)，允許鑽進深口袋；後期變大(0.9x)，產生正確的 VdW 接觸
+            radius_scale = 0.5 + 0.4 * step_progress # 0.5 -> 0.9
+            
             type_probs_L = x_L[..., :9]
-            radii_L = type_probs_L @ self.params.vdw_radii[:9].float()
+            radii_L = (type_probs_L @ self.params.vdw_radii[:9].float()) * radius_scale
             if x_P.dim() == 2: x_P = x_P.unsqueeze(0)
             prot_radii_map = torch.tensor([1.7, 1.55, 1.52, 1.8], device=pos_P.device, dtype=torch.float32)
-            radii_P = (x_P[..., :4] @ prot_radii_map)
+            radii_P = (x_P[..., :4] @ prot_radii_map) * radius_scale
             sigma_ij = radii_L.unsqueeze(-1) + radii_P.unsqueeze(1)
             
             # 3. Soft Energy (Intermolecular: vdW + Coulomb)
@@ -1710,9 +1714,9 @@ class MaxFlowExperiment:
         noise_scales = 2.0 + miner_genes.view(B, 1, 1) * 23.0 # Range: [2.0, 25.0]
         
         # 2. 幾何剛性基因 (Geometric Stiffness)
-        # 激進派允許鍵長扭曲 (便於穿牆)，保守派嚴格遵守化學鍵
-        # [v61.4 Fix] Ultra-Flexibility for pore penetration: Range [2.0, 0.01]
-        bond_factors = 2.0 - 1.99 * miner_genes 
+        # [v61.7 Fix] Liquid State: 允許鍵長在初期極度壓縮，以通過瓶頸
+        # Range: [1.0, 0.01] (從普通軟 到 液體)
+        bond_factors = 1.0 - 0.99 * miner_genes
 
         # [v61.0 Debug] Force Correct Pocket Center (Redocking Mode)
         # 如果開啟 Redocking，強制將搜索中心對準原位配體，並縮減初始噪聲
@@ -2019,16 +2023,18 @@ class MaxFlowExperiment:
                 
                 # [v60.5 Fix] Alpha Rescue Logic (Auto-Softening)
                 # If average energy exceeds 1000, soften the manifold to avoid crashes
-                # [v61.6 Fix] Alpha-Rescue Guard: Don't rescue in the final stretch!
-                if batch_energy.mean() > 1000.0 and step < self.config.steps - 100:
+                # [v61.7 Fix] Strict Rescue Ban: 只在前 80% 的步驟允許救援，最後階段必須硬著陸
+                if batch_energy.mean() > 1000.0 and step < self.config.steps * 0.8:
                     self.phys.current_alpha = max(self.phys.current_alpha, 2.0)
                     if step % 10 == 0:
                         logger.info(f"   🛡️  [Alpha-Rescue] High Energy ({batch_energy.mean():.1f}) detect, softening alpha=2.0")
                 
-                # [v61.6 Fix] Terminal Polishing (Micro-Annealing)
-                # Force alpha to minimum precision (0.1) in the last 100 steps
-                if step >= self.config.steps - 100:
+                # [v61.7 Fix] Terminal Polishing (The Ghost Protocol)
+                # 延長到最後 150 步，強制鎖死 Alpha=0.1 並關閉噪聲
+                if step >= self.config.steps - 150:
                     self.phys.current_alpha = 0.1
+                    if step % 50 == 0:
+                        logger.info("   💎 [The Ghost Protocol] Terminal Polishing: Alpha=0.1, Noise=0")
                 
                 # Hierarchical Engine Call
                 e_soft, e_hard, alpha = self.phys.compute_energy(pos_L_reshaped, pos_P_batched, q_L, q_P_batched, 
@@ -2245,8 +2251,8 @@ class MaxFlowExperiment:
                         
                         # [v59.7] Langevin Injection with Adaptive Noise Scale
                         # Transformations ODE solve to Stochastic Differential Equation (SDE)
-                        # [v61.6 Fix] Micro-Annealing: Turn off noise at final stretch for precision
-                        if step >= 300 and step < self.config.steps - 100: 
+                        # [v61.7 Fix] The Ghost Protocol: Turn off noise at final stretch (150 steps)
+                        if step >= 300 and step < self.config.steps - 150: 
                             # Detect "Stuck" state: current energy relative to best
                             curr_e = batch_energy.mean().item()
                             self.energy_ma = 0.9 * (self.energy_ma if self.energy_ma is not None else curr_e) + 0.1 * curr_e
