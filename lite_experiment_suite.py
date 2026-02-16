@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v62.7 MaxFlow (ICLR 2026 Golden Calculus Refined - Hotfix)"
+VERSION = "v62.8 MaxFlow (ICLR 2026 Golden Calculus Refined - Stability Hotfix II)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -2214,7 +2214,8 @@ class MaxFlowExperiment:
                 
                 # [v58.0] Master Clean Reporting
                 if step % 50 == 0:
-                    logger.info(f"   Step {step:03d} | E: {batch_energy.mean().item():.2f} | Alpha: {alpha:.3f} | FM: {loss_fm.item():.4f}")
+                    alpha_val = alpha.mean().item() if torch.is_tensor(alpha) else alpha
+                    logger.info(f"   Step {step:03d} | E: {batch_energy.mean().item():.2f} | Alpha: {alpha_val:.3f} | FM: {loss_fm.item():.4f}")
                 
                 # Trajectory updates handled by unified Drifting Field
                 if self.config.mode == "inference":
