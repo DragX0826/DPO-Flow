@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v62.3 MaxFlow (ICLR 2026 Golden Calculus Refined - Dark Matter Mode)"
+VERSION = "v62.4 MaxFlow (ICLR 2026 Golden Calculus Refined - True Ghost Mode)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -404,21 +404,23 @@ class PhysicsEngine:
             # 4. Hard Energy (Severe Clashes)
             e_clash = torch.relu(sigma_ij - dist).pow(2).sum(dim=(1, 2))
             
-            # [v62.3 Fix] Stronger COM Suction (Dark Matter Guidance)
+            # [v62.4 Fix] Tractor Beam Suction
             # Pulls ligand as a whole ship towards the harbor center, preventing atom-wise collapse.
             # 1. Compute COM in aligned space (B, 1, 3)
             current_com = pos_L_aligned.mean(dim=1, keepdim=True)
             # 2. Compute distance from COM to center (which is 0 in aligned space) (B, 1)
             dist_com_to_center = torch.norm(current_com, dim=-1) # (B, 1)
             # 3. Apply suction force on the global translation
-            e_suction = 2.0 * dist_com_to_center.pow(2).squeeze() # Calibrated at 2.0 for Phase 1
+            e_suction = 5.0 * dist_com_to_center.pow(2).squeeze() # Tractor Beam
 
-            # [v61.9 Fix] Staged Optimization
-            if step_progress < 0.3:
-                # Phase 1: Explosion (Only repulsion/clashes to push atoms apart)
-                return nuclear_repulsion + e_clash * 10.0 + e_suction, e_clash, self.current_alpha
+            # [v62.4 Fix] True Ghost Mode Optimization
+            if step_progress < 0.5:
+                # Phase 1: Ghost Mode (Frictionless Ingress)
+                # Absolute zero repulsion (Soft-Clamped + No Nuclear + No Clash)
+                return e_soft + e_suction, e_clash, self.current_alpha
             else:
-                # Phase 2: Binding (Enable attraction and final seating)
+                # Phase 2: Materialization (Seating & Optimization)
+                # Restore full physical integrity
                 return e_soft + nuclear_repulsion + e_clash + e_suction, e_clash, self.current_alpha
 
     # --- SECTION 4: SCIENTIFIC METRICS (ICLR RIGOUR) ---
