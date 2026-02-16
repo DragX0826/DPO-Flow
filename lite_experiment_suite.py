@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v61.3 MaxFlow (ICLR 2026 Golden Calculus Refined - Infiltration & Lockdown)"
+VERSION = "v61.4 MaxFlow (ICLR 2026 Golden Calculus Refined - Breaching the Barrier)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -300,10 +300,12 @@ class PhysicsEngine:
             # Wait, high force should SLOW DOWN hardening.
             # sigmoid(5 * (0.5 - norm_force)) -> high force (norm=1) -> sigmoid(-2.5) -> small decay.
             # low force (norm=0) -> sigmoid(2.5) -> high decay -> hardening accelerates.
-            decay = self.hardening_rate * torch.sigmoid(5.0 * (0.5 - norm_force))
+            # [v61.4 Fix] Alpha Persistence: slower hardening for deep entry
+            # Shift threshold from 0.5 to 0.2 to delay hardening during high-force resolve
+            decay = self.hardening_rate * torch.sigmoid(5.0 * (0.2 - norm_force))
             self.current_alpha = self.current_alpha * (1.0 - decay.item())
-            # [v60.0 Fix] Maintain alpha >= 0.1 to avoid "Jamming" in pockets
-            self.current_alpha = max(self.current_alpha, 0.1)
+            # [v61.4 Fix] Maintain alpha >= 0.5 to ensure persistent soft-manifold penetration
+            self.current_alpha = max(self.current_alpha, 0.5)
 
     def soft_clip_vector(self, v, max_norm=10.0):
         """
@@ -384,6 +386,11 @@ class PhysicsEngine:
             
             nuclear_repulsion = w_nuc * clamped_repulsion.sum(dim=(1,2))
             
+            # [v61.4 Fix] Centripetal Suction (Solvent Exclusion Proxy)
+            # Pulls ligand atoms towards the joint pocket center to force occupancy
+            dist_to_center = torch.norm(pos_L_aligned, dim=-1) # (B, N)
+            e_suction = 0.5 * dist_to_center.pow(2).mean(dim=-1) # (B,)
+            
             # [v59.1 Fix] Attention-weighted Forces (Soft Distogram Simulation)
             attn_weights = F.softmax(-dist / 1.0, dim=-1) # (B, N, M)
             e_inter = (e_elec + e_vdw) * attn_weights
@@ -397,7 +404,7 @@ class PhysicsEngine:
             # 4. Hard Energy (Severe Clashes)
             e_clash = torch.relu(sigma_ij - dist).pow(2).sum(dim=(1, 2))
             
-            return e_soft + nuclear_repulsion, e_clash, self.current_alpha
+            return e_soft + nuclear_repulsion + e_suction, e_clash, self.current_alpha
 
     # --- SECTION 4: SCIENTIFIC METRICS (ICLR RIGOUR) ---
     def calculate_valency_loss(self, pos_L, x_L):
@@ -1698,8 +1705,8 @@ class MaxFlowExperiment:
         
         # 2. 幾何剛性基因 (Geometric Stiffness)
         # 激進派允許鍵長扭曲 (便於穿牆)，保守派嚴格遵守化學鍵
-        # [v61.2 Fix] Allow more flexibility for induced fit: Range [2.0, 0.1]
-        bond_factors = 2.0 - 1.9 * miner_genes 
+        # [v61.4 Fix] Ultra-Flexibility for pore penetration: Range [2.0, 0.01]
+        bond_factors = 2.0 - 1.99 * miner_genes 
 
         # [v61.0 Debug] Force Correct Pocket Center (Redocking Mode)
         # 如果開啟 Redocking，強制將搜索中心對準原位配體，並縮減初始噪聲
