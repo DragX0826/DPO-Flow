@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v59.6 MaxFlow (ICLR 2026 Golden Calculus Refined - Gradient Stability)"
+VERSION = "v59.7 MaxFlow (ICLR 2026 Golden Calculus Refined - Langevin Dynamics)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -1787,6 +1787,7 @@ class MaxFlowExperiment:
         history_E = []
         convergence_history = []
         steps_to_09 = None 
+        self.energy_ma = None # [v59.7] Adaptive Noise state
         
         for step in range(start_step, self.config.steps):
             t_val = step / self.config.steps
@@ -1857,24 +1858,29 @@ class MaxFlowExperiment:
                 
                 data.x_L = x_L_final.view(-1, D) # Model expects flattended (B*N, D)
                 
-                # [v58.0] Initial Scope
-                if step == 0:
-                    pos_P_sub, x_P_sub, q_P_sub = pos_P[:200], x_P[:200], q_P[:200]
-
-                # [v57.0] Dynamic KNN Pocket Slicing
+                # [v59.7] Multi-Centroid KNN for large proteins (e.g. 3PBL)
+                # Voting-based pocket selection using first batch, best batch, and overall mean
                 if (step % 50 == 0 or step == 0) and step < self.config.steps - 1:
                     with torch.no_grad():
-                        current_p_center = pos_L[0].mean(dim=0)
-                        dist_to_p = torch.norm(pos_P - current_p_center, dim=-1)
-                        # [v59.0 Fix] Increase search radius to 20.0A for large pocket visibility (3PBL)
-                        near_indices = torch.where(dist_to_p < 20.0)[0]
-                        if len(near_indices) < 20: 
-                            near_indices = torch.topk(dist_to_p, k=100, largest=False).indices
+                        best_idx_curr = batch_energy.argmin().item()
+                        centers = torch.stack([
+                            p_center,                       # Initial center
+                            pos_L[0].mean(dim=0),           # First batch centroid
+                            pos_L[best_idx_curr].mean(dim=0), # Best batch centroid
+                            pos_L.mean(dim=(0, 1))           # Overall batch mean
+                        ]) # (4, 3)
                         
-                        pos_P_sub = pos_P[near_indices].detach().clone()
-                        x_P_sub = x_P[near_indices].detach().clone()
-                        q_P_sub = q_P[near_indices].detach().clone()
-                        logger.info(f"   🌊 [Dynamic KNN] Sliced {len(near_indices)} atoms.")
+                        # Use 25.0 A radius for large systems
+                        dist_to_centers = torch.cdist(pos_P, centers).min(dim=1)[0] # (M,)
+                        near_indices = torch.where(dist_to_centers < 25.0)[0]
+                        
+                        if len(near_indices) < 50:
+                            near_indices = torch.topk(dist_to_centers, k=min(150, pos_P.size(0)), largest=False).indices
+                        
+                        pos_P_sub = pos_P[near_indices]
+                        q_P_sub = q_P[near_indices]
+                        x_P_sub = x_P[near_indices]
+                        logger.info(f"   🌊 [v59.7 Multi-Centroid KNN] Sliced {len(pos_P_sub)} atoms for {self.config.pdb_id}.")
 
                 # Flow Field Prediction
                 # [v58.2 Hotfix] Disable CuDNN to allow double-backward through GRU backbone
@@ -1915,16 +1921,16 @@ class MaxFlowExperiment:
                 # Internal Geometry (Bonds & Angles)
                 e_bond = self.phys.calculate_internal_geometry_score(pos_L_reshaped) 
                 
-                # [v59.1 Innovation] 3-Phase Multi-stage Curriculum (Simulating Torsional Constraint)
-                if progress < 0.3:
-                    # Phase 1: Search (Ghost Mode)
-                    w_bond, w_hard = 1.0, 1.0
-                elif progress < 0.7:
-                    # Phase 2: Relax (Induced Fit)
-                    w_bond, w_hard = 100.0, 10.0
-                else:
-                    # Phase 3: Refine (Crystal Rigidity)
-                    w_bond, w_hard = 1000.0, 100.0
+                # [v59.7] Continuous Harmonic Curriculum (Polynomial Growth)
+                # Replaces discrete phases to prevent "Stiffness Shock"
+                # Base weights: 500.0 for bond, 50.0 for hard
+                w_bond = 1.0 + (500.0 - 1.0) * (progress ** 1.5)
+                w_hard = 1.0 + (50.0 - 1.0) * (progress ** 1.5)
+                
+                # Adaptive scaling: Increase constraints as alpha (softness) decreases
+                alpha_factor = 1.0 + 2.0 * (1.0 - alpha / self.phys.params.softness_start)
+                w_bond *= alpha_factor
+                w_hard *= alpha_factor
                 
                 # Unified Target Velocity Selection
                 # E_total = E_soft + w_hard*E_hard + w_bond*E_bond
@@ -1993,11 +1999,11 @@ class MaxFlowExperiment:
                 # Update v_pred with clipped values for the rest of the loop/trajectory
                 v_pred = v_pred_clipped
                 
-                # [v58.4 Physics Hardening] Balanced Energy monitoring with mandatory crossing
-                # Forcing the model to run at least 70% of steps to cross the energy barrier
-                if step < (self.config.steps * 0.7):
+                # [v59.7 Relaxed Early Stopping]
+                # During critical exploration (Langevin injection), we allow more time.
+                if step < 500: 
                     patience_counter = 0 
-                elif current_metric < best_metric - 0.005:
+                elif current_metric < best_metric - 0.001: # Finer threshold
                     best_metric = current_metric
                     patience_counter = 0
                 else:
@@ -2096,9 +2102,26 @@ class MaxFlowExperiment:
                         # Smooth Drifting Field update (EMA)
                         drifting_field = 0.9 * drifting_field + 0.1 * current_drift
                         
-                        # Apply PI-Drift Update: dx = (v_theta + mu * u_t) * dt
-                        # This is the mathematical pinnacle for ICLR Oral grade.
-                        pos_L.data.add_((v_pred.detach() + drift_coeff * drifting_field) * dt_euler * 2.0)
+                        # [v59.7] Langevin Injection with Adaptive Noise Scale
+                        # Transformations ODE solve to Stochastic Differential Equation (SDE)
+                        if step >= 300: # Apply noise after initial settlement
+                            # Detect "Stuck" state: current energy relative to best
+                            curr_e = batch_energy.mean().item()
+                            self.energy_ma = 0.9 * (self.energy_ma if self.energy_ma is not None else curr_e) + 0.1 * curr_e
+                            energy_stuck = torch.sigmoid(torch.tensor((self.energy_ma - best_metric) / 10.0, device=device))
+                            
+                            sigma_base = 1.0 * (1.0 - progress) ** 2 # Quadratic decay
+                            sigma_noise = sigma_base * (1.0 + 2.0 * energy_stuck.item()) # Boost if stuck
+                            langevin_noise = torch.randn_like(pos_L) * sigma_noise * np.sqrt(dt_euler)
+                        else:
+                            langevin_noise = 0.0
+
+                        # Apply PI-Drift + Langevin Update
+                        # dx = (v_theta + mu * u_t) * dt + sigma * dW
+                        pos_L.data.add_(
+                            (v_pred.detach() + drift_coeff * drifting_field) * dt_euler * 2.0
+                            + langevin_noise
+                        )
                         
                 # [v38.0] Store prediction for next Euler step
                 v_pred_prev = v_pred.detach()
