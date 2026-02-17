@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v70.6 MaxFlow (ICLR 2026 - Darwinian Stability)"
+VERSION = "v70.7 MaxFlow (ICLR 2026 - DataParallel Fix)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -1101,20 +1101,20 @@ class MaxFlowBackbone(nn.Module):
             nn.LayerNorm(hidden_dim)
         )
 
-    def forward(self, data, t, pos_L, x_P, pos_P):
+    def forward(self, data, t, pos_L, x_L, x_P, pos_P):
         # [v48.7 Hotfix] Consistently flatten ligand inputs to (B*N, ...)
-        # [v70.5] DataParallel Support: Infer B and N from inputs
+        # [v70.7] DataParallel Support: Use explicit x_L to ensure correct splitting
         if pos_L.dim() == 3:
             B_lvl, N_lvl, _ = pos_L.shape
             # If pos_L is (B, N, 3), we are in DataParallel or standard batched mode
             pos_L_flat = pos_L.reshape(B_lvl * N_lvl, 3)
             # Regenerate batch indices locally to match the slice on this GPU
             batch_local = torch.arange(B_lvl, device=pos_L.device).repeat_interleave(N_lvl)
-            x_L_flat = data.x_L.reshape(B_lvl * N_lvl, -1) if data.x_L.dim() == 3 else data.x_L
+            x_L_flat = x_L.reshape(B_lvl * N_lvl, -1)
         else:
             # Fallback for flattened inputs
             pos_L_flat = pos_L
-            x_L_flat = data.x_L
+            x_L_flat = x_L
             batch_local = data.batch
             B_lvl = t.size(0)
 
@@ -1189,8 +1189,8 @@ class RectifiedFlow(nn.Module):
         super().__init__()
         self.model = velocity_model
         
-    def forward(self, data, t, pos_L, x_P, pos_P):
-        out = self.model(data, t, pos_L, x_P, pos_P)
+    def forward(self, data, t, pos_L, x_L, x_P, pos_P):
+        out = self.model(data, t, pos_L, x_L, x_P, pos_P)
         # Handle dictionary output for internal optimization
         if isinstance(out, dict):
             return out
@@ -2222,7 +2222,8 @@ class MaxFlowExperiment:
                     x_P_rep = x_P_sub.unsqueeze(0).repeat(B, 1, 1)
                     pos_P_rep = pos_P_sub.unsqueeze(0).repeat(B, 1, 1)
                     
-                    out = model(data, t=t_input, pos_L=pos_L, x_P=x_P_rep, pos_P=pos_P_rep)
+                    # [v70.7] Explicitly pass x_L so DataParallel can split it
+                    out = model(data, t=t_input, pos_L=pos_L, x_L=data.x_L, x_P=x_P_rep, pos_P=pos_P_rep)
                     v_pred = out['v_pred'].view(B, N, 3)
                     s_current = out['latent'] 
                 
