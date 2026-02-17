@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v70.9 MaxFlow (ICLR 2026 - DataParallel Nuclear Fix)"
+VERSION = "v71.0 MaxFlow (ICLR 2026 - Atomic Orchestration)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -1101,9 +1101,9 @@ class MaxFlowBackbone(nn.Module):
             nn.LayerNorm(hidden_dim)
         )
 
-    def forward(self, t, pos_L, x_L, x_P, pos_P, batch_indices):
-        # [v70.9] DataParallel Nuclear Fix: Use explicit tensors only. 
-        # Removed 'data' object to ensure DataParallel splits all arguments correctly.
+    def forward(self, t_flow, pos_L, x_L, x_P, pos_P, batch_indices):
+        # [v71.0] Atomic Signature: Renamed t to t_flow for DP safety
+        t = t_flow
         if pos_L.dim() == 3:
             B_lvl, N_lvl, _ = pos_L.shape
             pos_L_flat = pos_L.reshape(B_lvl * N_lvl, 3)
@@ -1188,9 +1188,10 @@ class RectifiedFlow(nn.Module):
         super().__init__()
         self.model = velocity_model
         
-    def forward(self, t, pos_L, x_L, x_P, pos_P, batch_indices):
-        # [v70.9] Nuclear Switch: Removed data object
-        out = self.model(t, pos_L, x_L, x_P, pos_P, batch_indices)
+    def forward(self, **kwargs):
+        # [v71.0] Keyword Dispatch: Definitive Multi-GPU stability.
+        # DataParallel handles keywords by splitting any Tensors within them.
+        out = self.model(**kwargs)
         # Handle dictionary output for internal optimization
         if isinstance(out, dict):
             return out
@@ -2222,9 +2223,10 @@ class MaxFlowExperiment:
                     x_P_rep = x_P_sub.unsqueeze(0).repeat(B, 1, 1)
                     pos_P_rep = pos_P_sub.unsqueeze(0).repeat(B, 1, 1)
                     
-                    # [v70.9] Nuclear Signature: Explicit tensors ONLY.
-                    # DataParallel handles positional tensors with 100% reliability.
-                    out = model(t_input, pos_L, data.x_L, x_P_rep, pos_P_rep, data.batch)
+                    # [v71.0] Atomic Orchestration: Use Keywords 
+                    # This eliminates all positional ambiguity in DataParallel.
+                    out = model(t_flow=t_input, pos_L=pos_L, x_L=data.x_L, 
+                                x_P=x_P_rep, pos_P=pos_P_rep, batch_indices=data.batch)
                     v_pred = out['v_pred'].view(B, N, 3)
                     s_current = out['latent'] 
                 
