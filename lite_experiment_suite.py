@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v70.4 MaxFlow (ICLR 2026 - Training Loop Fix)"
+VERSION = "v70.5 MaxFlow (ICLR 2026 Ultimate Zenith - Multi-GPU Support)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -1102,37 +1102,49 @@ class MaxFlowBackbone(nn.Module):
 
     def forward(self, data, t, pos_L, x_P, pos_P):
         # [v48.7 Hotfix] Consistently flatten ligand inputs to (B*N, ...)
-        # This aligns with data.batch (B*N,) and avoids broadcasting errors.
+        # [v70.5] DataParallel Support: Infer B and N from inputs
         if pos_L.dim() == 3:
             B_lvl, N_lvl, _ = pos_L.shape
-            pos_L = pos_L.reshape(B_lvl * N_lvl, 3)
-        
-        x_L_flat = data.x_L
-        if x_L_flat.dim() == 3:
-            B_lvl, N_lvl, D_lvl = x_L_flat.shape
-            x_L_flat = x_L_flat.reshape(B_lvl * N_lvl, D_lvl)
+            # If pos_L is (B, N, 3), we are in DataParallel or standard batched mode
+            pos_L_flat = pos_L.reshape(B_lvl * N_lvl, 3)
+            # Regenerate batch indices locally to match the slice on this GPU
+            batch_local = torch.arange(B_lvl, device=pos_L.device).repeat_interleave(N_lvl)
+            x_L_flat = data.x_L.reshape(B_lvl * N_lvl, -1) if data.x_L.dim() == 3 else data.x_L
+        else:
+            # Fallback for flattened inputs
+            pos_L_flat = pos_L
+            x_L_flat = data.x_L
+            batch_local = data.batch
+            B_lvl = t.size(0)
+
+        # [v70.5] Protein features might be repeated [B, M, D] for DataParallel distribution
+        if x_P.dim() == 3:
+            x_P = x_P[0] # Take first slice as they are identical
+        if pos_P.dim() == 3:
+            pos_P = pos_P[0]
 
         # [v35.9] Protein Atom Capping
         n_p_limit = min(200, pos_P.size(0))
-        pos_P = pos_P[:n_p_limit]
-        x_P = x_P[:n_p_limit]
+        pos_P_sub = pos_P[:n_p_limit]
+        x_P_sub = x_P[:n_p_limit]
 
         # 1. Bio-Perception (PLaTITO)
-        h_P = self.perception(x_P)
+        h_P = self.perception(x_P_sub)
         h_P = self.proj_P(h_P)
         
         # 2. Embedding & Time
         x = self.embedding(x_L_flat)
         x = self.ln(x)
         t_emb = self.time_mlp(t)
-        x = x + t_emb[data.batch]
+        # Use local batch indices for lookup
+        x = x + t_emb[batch_local]
         
         # 3. Cross-Attention (Bio-Geometric Reasoning)
-        dist_lp = torch.cdist(pos_L, pos_P)
+        dist_lp = torch.cdist(pos_L_flat, pos_P_sub)
         x = self.cross_attn(x, h_P, dist_lp)
         
         # 4. GVP Interaction (SE(3) Equivariance)
-        v_in = pos_L.unsqueeze(1) # (B*N, 1, 3) - [v48.7] Consistent with GVP(si, 1)
+        v_in = pos_L_flat.unsqueeze(1) # (B*N, 1, 3) 
         s_in = x
         
         for layer in self.gvp_layers:
@@ -1931,6 +1943,11 @@ class MaxFlowExperiment:
         backbone = MaxFlowBackbone(D, 64, no_mamba=self.config.no_mamba).to(device)
         model = RectifiedFlow(backbone).to(device)
         
+        # [v70.5] Multi-GPU Support (T4 x2)
+        if torch.cuda.device_count() > 1:
+            logger.info(f"   🚀 [Multi-GPU] Enabling DataParallel on {torch.cuda.device_count()} GPUs.")
+            model = nn.DataParallel(model)
+        
         # [Mode Handling] Inference vs Train
         if self.config.mode == "inference":
              logger.info("   🔍 Inference Mode: Freezing Model Weights & Enabling ProSeCo.")
@@ -2111,7 +2128,8 @@ class MaxFlowExperiment:
                 x_L_hard = torch.zeros_like(x_L_soft).scatter_(-1, x_L_soft.argmax(dim=-1, keepdim=True), 1.0)
                 x_L_final = (x_L_hard - x_L_soft).detach() + x_L_soft
                 
-                data.x_L = x_L_final.view(-1, D) # Model expects flattended (B*N, D)
+                # [v70.5] DataParallel requires x_L to have a batch dimension for splitting
+                data.x_L = x_L_final.view(B, N, D)
                 
                 # [v59.7] Multi-Centroid KNN for large proteins (e.g. 3PBL)
                 # Voting-based pocket selection using first batch, best batch, and overall mean
@@ -2198,9 +2216,12 @@ class MaxFlowExperiment:
                 # [v58.2 Hotfix] Disable CuDNN to allow double-backward through GRU backbone
                 with torch.backends.cudnn.flags(enabled=False):
                     t_input = torch.full((B,), progress, device=device)
-                    # Model expects flattended pos_L (B*N, 3)
-                    pos_L_flat = pos_L.view(-1, 3)
-                    out = model(data, t=t_input, pos_L=pos_L_flat, x_P=x_P_sub, pos_P=pos_P_sub)
+                    # [v70.5] DataParallel: Pass unflattened pos_L and repeated protein features
+                    # This ensures DataParallel can split along the batch dimension B.
+                    x_P_rep = x_P_sub.unsqueeze(0).repeat(B, 1, 1)
+                    pos_P_rep = pos_P_sub.unsqueeze(0).repeat(B, 1, 1)
+                    
+                    out = model(data, t=t_input, pos_L=pos_L, x_P=x_P_rep, pos_P=pos_P_rep)
                     v_pred = out['v_pred'].view(B, N, 3)
                     s_current = out['latent'] 
                 
