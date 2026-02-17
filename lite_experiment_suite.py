@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v70.5 MaxFlow (ICLR 2026 Ultimate Zenith - Multi-GPU Support)"
+VERSION = "v70.6 MaxFlow (ICLR 2026 - Darwinian Stability)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -948,7 +948,8 @@ class GVP(nn.Module):
     def forward(self, s, v):
         # v: (B, N, D_in, 3)
         v_out = self.v_proj(v.transpose(-1, -2)).transpose(-1, -2) # (B, N, D_out, 3)
-        v_norm = torch.norm(v_out, dim=-1) # (B, N, D_out)
+        # [v70.6] Stable Norm: Avoid double-backward NaNs by using explicit sqrt with eps
+        v_norm = torch.sqrt(torch.sum(v_out**2, dim=-1) + 1e-8) # (B, N, D_out)
         
         s_combined = torch.cat([s, v_norm], dim=-1)
         s_out = self.s_proj(s_combined)
@@ -2345,13 +2346,19 @@ class MaxFlowExperiment:
                 # The old create_graph=True through 100,000x drift caused gradient explosion
                 loss_anchor = 1000.0 * drift_loss.detach()
                 
-                # Unified Formula: FM + RJF + Semantic + Anchor
-                # [v70.4] Proper loss composition with reduced, detached anchor
+                # Unified Formula: FM + RJF + Semantic + Anchor + Valency
+                # [v70.6] Darwinian Loss: Force chemical validity during flow
+                valency_err = self.phys.calculate_valency_loss(pos_L, x_L_final.view(B, N, -1))
+                loss_valency = valency_err.mean()
+                
+                # [v70.6] Stability: Unified Nan-Sentry (Removing redundant 10.0 mask)
                 loss_fm = torch.nan_to_num(loss_fm, nan=1.0)
                 jacob_reg = torch.nan_to_num(jacob_reg, nan=0.0)
                 loss_semantic = torch.nan_to_num(loss_semantic, nan=0.0)
+                loss_valency = torch.nan_to_num(loss_valency, nan=0.0)
                 
-                loss = loss_fm + 0.1 * jacob_reg + 0.05 * loss_semantic + loss_anchor
+                # Weighted Loss Synthesis
+                loss = loss_fm + 0.1 * jacob_reg + 0.05 * loss_semantic + loss_anchor + 10.0 * loss_valency
 
                 # [v59.5 Fix] NaN Sentry inside the loop
                 # Check for NaNs immediately after backward
@@ -2366,7 +2373,9 @@ class MaxFlowExperiment:
                         opt.zero_grad()
                     continue # Skip to next step
                 
-                batch_energy = total_energy.detach() # For reporting
+                # [v70.6] Reporting Cap: Prevent "Millions" in logs by capping repulsion display
+                # Note: Physics still uses raw values for gradients, this is display only
+                batch_energy = torch.clamp(total_energy.detach(), max=1000.0) 
                 
                 # Early Stopping Logic (Monitor Energy only for v58.1)
                 current_metric = batch_energy.min().item()
