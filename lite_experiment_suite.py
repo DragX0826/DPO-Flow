@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v71.0 MaxFlow (ICLR 2026 - Atomic Orchestration)"
+VERSION = "v71.1 MaxFlow (ICLR 2026 - Multi-GPU Refinement)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -1963,8 +1963,8 @@ class MaxFlowExperiment:
         # Run a dummy forward pass to get initial v_pred
         with torch.no_grad():
             t_0 = torch.zeros(B, device=device)
-            data_0 = FlowData(x_L=x_L, batch=torch.arange(B, device=device).repeat_interleave(N))
-            out_0 = model(data_0, t=t_0, pos_L=pos_L, x_P=x_P, pos_P=pos_P)
+            out_0 = model(t_flow=t_0, pos_L=pos_L, x_L=x_L, x_P=x_P, pos_P=pos_P, 
+                          batch_indices=torch.arange(B, device=device).repeat_interleave(N))
             v_0 = out_0['v_pred']
             # Plot
             self.visualizer.plot_vector_field_2d(pos_L, v_0, p_center, filename=f"fig1_vectors_step0.pdf")
@@ -2241,8 +2241,10 @@ class MaxFlowExperiment:
                 
                 # [v48.1 Stability Hotfix] Reference Model Prediction
                 with torch.no_grad():
-                    pos_L_flat_ref = pos_L.view(-1, 3) 
-                    out_ref = model_ref(data, t=t_input, pos_L=pos_L_flat_ref, x_P=x_P_sub, pos_P=pos_P_sub)
+                    # [v71.1] Atomic Signature for Reference Model
+                    out_ref = model_ref(t_flow=t_input, pos_L=pos_L.view(-1, 3), 
+                                        x_L=data.x_L, x_P=x_P_sub, pos_P=pos_P_sub, 
+                                        batch_indices=data.batch)
                     v_ref = out_ref['v_pred'].view(B, N, 3) 
                 
                 # [v58.1] Refined Golden Triangle: Unified Force Target
