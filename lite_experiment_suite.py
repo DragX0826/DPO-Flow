@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v70.8 MaxFlow (ICLR 2026 - DataParallel Signature fix)"
+VERSION = "v70.9 MaxFlow (ICLR 2026 - DataParallel Nuclear Fix)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -1101,21 +1101,19 @@ class MaxFlowBackbone(nn.Module):
             nn.LayerNorm(hidden_dim)
         )
 
-    def forward(self, data, t, pos_L, x_L, x_P, pos_P):
-        # [v48.7 Hotfix] Consistently flatten ligand inputs to (B*N, ...)
-        # [v70.7] DataParallel Support: Use explicit x_L to ensure correct splitting
+    def forward(self, t, pos_L, x_L, x_P, pos_P, batch_indices):
+        # [v70.9] DataParallel Nuclear Fix: Use explicit tensors only. 
+        # Removed 'data' object to ensure DataParallel splits all arguments correctly.
         if pos_L.dim() == 3:
             B_lvl, N_lvl, _ = pos_L.shape
-            # If pos_L is (B, N, 3), we are in DataParallel or standard batched mode
             pos_L_flat = pos_L.reshape(B_lvl * N_lvl, 3)
-            # Regenerate batch indices locally to match the slice on this GPU
+            # Regenerate batch indices locally for GVP/Time lookup
             batch_local = torch.arange(B_lvl, device=pos_L.device).repeat_interleave(N_lvl)
             x_L_flat = x_L.reshape(B_lvl * N_lvl, -1)
         else:
-            # Fallback for flattened inputs
             pos_L_flat = pos_L
             x_L_flat = x_L
-            batch_local = data.batch
+            batch_local = batch_indices
             B_lvl = t.size(0)
 
         # [v70.5] Protein features might be repeated [B, M, D] for DataParallel distribution
@@ -1156,13 +1154,14 @@ class MaxFlowBackbone(nn.Module):
         s = s_in
         if hasattr(self, 'recurrent_flow'):
             # Reshape for GRU (B, L, H)
-            batch_size = data.batch.max().item() + 1
-            counts = torch.bincount(data.batch)
+            # [v70.9] Use local batch indices for masking to match GPU slice
+            batch_size = batch_local.max().item() + 1
+            counts = torch.bincount(batch_local)
             max_N = counts.max().item()
             s_padded = torch.zeros(batch_size, max_N, s.size(-1), device=s.device)
             mask = torch.zeros(batch_size, max_N, device=s.device, dtype=torch.bool)
             for b in range(batch_size):
-                idx = (data.batch == b)
+                idx = (batch_local == b)
                 n = counts[b].item()
                 s_padded[b, :n] = s[idx]
                 mask[b, :n] = True
@@ -1189,9 +1188,9 @@ class RectifiedFlow(nn.Module):
         super().__init__()
         self.model = velocity_model
         
-    def forward(self, data, t, pos_L, x_L, x_P, pos_P):
-        # [v70.8] Positional Forward for DataParallel Robustness
-        out = self.model(data, t, pos_L, x_L, x_P, pos_P)
+    def forward(self, t, pos_L, x_L, x_P, pos_P, batch_indices):
+        # [v70.9] Nuclear Switch: Removed data object
+        out = self.model(t, pos_L, x_L, x_P, pos_P, batch_indices)
         # Handle dictionary output for internal optimization
         if isinstance(out, dict):
             return out
@@ -2223,10 +2222,9 @@ class MaxFlowExperiment:
                     x_P_rep = x_P_sub.unsqueeze(0).repeat(B, 1, 1)
                     pos_P_rep = pos_P_sub.unsqueeze(0).repeat(B, 1, 1)
                     
-                    # [v70.8] Use ALL POSITIONAL arguments for DataParallel
-                    # This is the most robust way to ensure torch.nn.DataParallel 
-                    # splits every tensor along dim=0 (B) correctly.
-                    out = model(data, t_input, pos_L, data.x_L, x_P_rep, pos_P_rep)
+                    # [v70.9] Nuclear Signature: Explicit tensors ONLY.
+                    # DataParallel handles positional tensors with 100% reliability.
+                    out = model(t_input, pos_L, data.x_L, x_P_rep, pos_P_rep, data.batch)
                     v_pred = out['v_pred'].view(B, N, 3)
                     s_current = out['latent'] 
                 
