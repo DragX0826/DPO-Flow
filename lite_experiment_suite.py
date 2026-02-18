@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v71.2 MaxFlow (ICLR 2026 - Atomic Synchrony)"
+VERSION = "v71.3 MaxFlow (ICLR 2026 - Shape Harmonization)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -1123,7 +1123,8 @@ class MaxFlowBackbone(nn.Module):
             x_L_flat = x_L.reshape(B_lvl * N_lvl, -1)
         else:
             pos_L_flat = pos_L
-            x_L_flat = x_L
+            # [v71.3] Robust Flattening: Ensure x_L is flat even if pos_L was already flat
+            x_L_flat = x_L.reshape(pos_L.size(0), -1) if x_L.dim() == 3 else x_L
             batch_local = batch_indices
             B_lvl = t.size(0)
 
@@ -2252,11 +2253,14 @@ class MaxFlowExperiment:
                 
                 # [v48.1 Stability Hotfix] Reference Model Prediction
                 with torch.no_grad():
-                    # [v71.1] Atomic Signature for Reference Model
-                    out_ref = model_ref(t_flow=t_input, pos_L=pos_L.view(-1, 3), 
+                    # [v71.3] Shape Harmonization: Passing pos_L in native 3D (B, N, 3)
+                    # The backbone's internal logic will handle flattening consistently.
+                    out_ref = model_ref(t_flow=t_input, pos_L=pos_L, 
                                         x_L=data.x_L, x_P=x_P_sub, pos_P=pos_P_sub, 
                                         batch_indices=data.batch)
-                    v_ref = out_ref['v_pred'].view(B, N, 3) 
+                    # [v71.3] Handle potential 3D/2D output from backbone
+                    v_ref = out_ref['v_pred']
+                    if v_ref.dim() == 2: v_ref = v_ref.view(B, N, 3)
                 
                 # [v58.1] Refined Golden Triangle: Unified Force Target
                 pos_L_reshaped = pos_L # (B, N, 3)
