@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v71.6 MaxFlow (ICLR 2026 - Hotfix Synchrony)"
+VERSION = "v72.0 MaxFlow (ICLR 2026 - Golden Key Restoration)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -1784,6 +1784,7 @@ class MaxFlowExperiment:
         [v69.5] The Golden Key: 6D (Rot+Trans) MCMC with Hard-Physics Checkpoints
         Supports 6D jiggling and periodic hard-wall evaluation.
         [v71.4] Parallel Physics: Accelerated via multi-GPU dispatch.
+        [v72.0] Restored 8,000 step depth for sub-angstrom resolution.
         """
         device = pos_P.device
         logger.info(f"   [Lockpicker] Starting 6D Golden Key MCMC ({steps} steps)...")
@@ -2382,15 +2383,12 @@ class MaxFlowExperiment:
                 else:
                     self.phys.current_alpha = 0.01
                 
-                # [v66.0 Fix A] Master Anchor: Moderate Drift Constraint
-                # [v70.4] Reduced from 100,000x to 1,000x — old weight drowned all learning signals
-                # and produced energy values of 20,000+ that prevented convergence
+                # [v72.0] Master Anchor: FIXED (Re-attached to gradients)
+                # The detachment in v71.6 caused the 2.5A+ drift on Kaggle.
+                # Re-linking with 10k weight to force ligand stay in pocket.
                 current_centroid = pos_L.mean(dim=1) # (B, 3)
                 drift_loss = (current_centroid - p_center.view(1, 3)).norm(dim=-1).mean()
-                
-                # [v70.4] Detached anchor — do NOT compute second autograd through drift_loss
-                # The old create_graph=True through 100,000x drift caused gradient explosion
-                loss_anchor = 1000.0 * drift_loss.detach()
+                loss_anchor = 10000.0 * drift_loss
                 
                 # Unified Formula: FM + RJF + Semantic + Anchor + Valency
                 # [v70.6] Darwinian Loss: Force chemical validity during flow
@@ -2404,8 +2402,8 @@ class MaxFlowExperiment:
                 loss_valency = torch.nan_to_num(loss_valency, nan=0.0)
                 
                 # Weighted Loss Synthesis
-                # [v71.5] Hardened Valency: Increase weight to 50.0 to force chemical validity
-                loss = loss_fm + 0.1 * jacob_reg + 0.05 * loss_semantic + loss_anchor + 50.0 * loss_valency
+                # [v71.5] Hardened Valency: Balanced at 10.0 in v72.0 to avoid drowning physics
+                loss = loss_fm + 0.1 * jacob_reg + 0.05 * loss_semantic + loss_anchor + 10.0 * loss_valency
 
                 # [v59.5 Fix] NaN Sentry inside the loop
                 # Check for NaNs immediately after backward
@@ -2964,7 +2962,8 @@ if __name__ == "__main__":
     parser.add_argument("--redocking", action="store_true", help="Enable SOTA Benchmark Protocol (Pocket-Aware Redocking)")
     args = parser.parse_args()
     
-    print(f"🌟 Launching {VERSION} ICLR Suite...")
+    # [v72.0] Synchronize MCMC steps with baseline success
+    mcmc_steps = 8000 if args.steps > 1000 else 4000
 
     all_results = []
     all_histories = {} 
