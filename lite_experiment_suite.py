@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v72.4 MaxFlow (ICLR 2026 - Atomic Performance Sync)"
+VERSION = "v72.5 MaxFlow (ICLR 2026 - Nuclear Sync & Anchor)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -314,10 +314,19 @@ class PhysicsEngine(nn.Module):
         self.register_buffer("epsilon", ff_params.epsilon)
         self.register_buffer("standard_valencies", ff_params.standard_valencies)
         
-        # [v58.1] Golden Calculus: Force-Magnitude Annealing
-        self.current_alpha = self.params.softness_start
+        # [v72.5] Multi-GPU Schedule Sync: Register alpha as buffer
+        self.register_buffer("current_alpha_buffer", torch.tensor([ff_params.softness_start], dtype=torch.float32))
+        
         self.hardening_rate = 0.1 
         self.max_force_ema = 1.0 # [v58.1] Normalize decay rate
+
+    @property
+    def current_alpha(self):
+        return self.current_alpha_buffer.item()
+    
+    @current_alpha.setter
+    def current_alpha(self, value):
+        self.current_alpha_buffer.fill_(value)
 
     def reset_state(self):
         """Reset state for new trajectory (v58.1)."""
@@ -2390,12 +2399,11 @@ class MaxFlowExperiment:
                 else:
                     self.phys.current_alpha = 0.01
                 
-                # [v72.0] Master Anchor: FIXED (Re-attached to gradients)
-                # The detachment in v71.6 caused the 2.5A+ drift on Kaggle.
-                # Re-linking with 10k weight to force ligand stay in pocket.
+                # [v72.5] Master Anchor: NUCLEAR (Restored 100,000x from v70.2)
+                # This forces the ligand to lock into the pocket center during early flow.
                 current_centroid = pos_L.mean(dim=1) # (B, 3)
                 drift_loss = (current_centroid - p_center.view(1, 3)).norm(dim=-1).mean()
-                loss_anchor = 10000.0 * drift_loss
+                loss_anchor = 100000.0 * drift_loss
                 
                 # Unified Formula: FM + RJF + Semantic + Anchor + Valency
                 # [v70.6] Darwinian Loss: Force chemical validity during flow
@@ -2981,8 +2989,8 @@ if __name__ == "__main__":
         targets_to_run = ["1UYD", "3PBL", "7SMV", "4Z94", "7KX5", "6XU4"]
         args.steps = 1000 
         args.batch = 16
-        # [v70.1] Express Benchmark: 4000 steps for speed across 6 targets
-        configs = [{"name": "Helix-Flow", "use_muon": True, "no_physics": False, "mcmc_steps": 4000}]
+        # [v72.5] honor global high-precision MCMC even in benchmark
+        configs = [{"name": "Helix-Flow", "use_muon": True, "no_physics": False, "mcmc_steps": mcmc_steps}]
     elif args.ablation:
         print("\n🧬 [v70.2] Running Scientific Ablation Suite (Master Key vs Architectural Components)...")
         targets_to_run = [args.target] 
