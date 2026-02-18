@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v71.3 MaxFlow (ICLR 2026 - Shape Harmonization)"
+VERSION = "v71.4 MaxFlow (ICLR 2026 - MCMC Parallelization)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -1209,6 +1209,21 @@ class RectifiedFlow(nn.Module):
             return out
         return {'v_pred': out}
 
+# 4. Parallel Physics Dispatcher (v71.4)
+class ParallelPhysicsDispatcher(nn.Module):
+    """
+    Wraps the PhysicsEngine to allow DataParallel distribution
+    of heavy physics calculations during MCMC.
+    """
+    def __init__(self, physics_engine):
+        super().__init__()
+        self.phys = physics_engine
+        
+    def forward(self, pos_L, pos_P, q_L, q_P, x_L, x_P, step_progress):
+        # We wrap Alpha in a tensor to ensure consistent DataParallel return
+        energy, e_hard, alpha = self.phys.compute_energy(pos_L, pos_P, q_L, q_P, x_L, x_P, step_progress)
+        return energy, e_hard, torch.tensor([alpha], device=pos_L.device)
+
 # --- SECTION 7: CHECKPOINTING & UTILS ---
 def save_checkpoint(state, filename="maxflow_checkpoint.pt"):
     logger.info(f"💾 Saving Checkpoint to {filename}...")
@@ -1768,9 +1783,16 @@ class MaxFlowExperiment:
         """
         [v69.5] The Golden Key: 6D (Rot+Trans) MCMC with Hard-Physics Checkpoints
         Supports 6D jiggling and periodic hard-wall evaluation.
+        [v71.4] Parallel Physics: Accelerated via multi-GPU dispatch.
         """
         device = pos_P.device
         logger.info(f"   [Lockpicker] Starting 6D Golden Key MCMC ({steps} steps)...")
+        
+        # [v71.4] Parallel Physics Dispatcher
+        phys_dispatcher = ParallelPhysicsDispatcher(self.phys).to(device)
+        if torch.cuda.device_count() > 1:
+            logger.info(f"   🚀 [Lockpicker] Enabling Parallel Physics on {torch.cuda.device_count()} GPUs.")
+            phys_dispatcher = nn.DataParallel(phys_dispatcher)
         
         B_mcmc = 256 
         N = best_pos.shape[0]
@@ -1791,8 +1813,10 @@ class MaxFlowExperiment:
         # Baseline check
         current_prog = 0.1 # Even softer start
         with torch.no_grad():
-            current_E, _, _ = self.phys.compute_energy(current_pos + com, pos_P_batch, q_L_batch, q_P_batch, x_L_batch, x_P_batch, step_progress=current_prog)
-            # Find the initial global best in hard physics
+            # [v71.4] Use dispatcher for parallel energy check
+            current_E, _, _ = phys_dispatcher(current_pos + com, pos_P_batch, q_L_batch, q_P_batch, x_L_batch, x_P_batch, current_prog)
+            
+            # Find the initial global best in hard physics (Single pose check remains on master)
             hard_E_init, _, _ = self.phys.compute_energy(best_pos.unsqueeze(0), pos_P.unsqueeze(0), q_L.unsqueeze(0), q_P.unsqueeze(0), x_L.unsqueeze(0), x_P.unsqueeze(0), step_progress=1.0)
             best_overall_E = hard_E_init.item()
             logger.info(f"   [Lockpicker] Initial Hard Energy: {best_overall_E:.2f}")
@@ -1835,14 +1859,12 @@ class MaxFlowExperiment:
             if getattr(self.config, 'no_jiggling', False):
                  proposed_pos = torch.bmm(current_pos, R) + rand_trans
             elif step % 100 == 0:
-                 proposed_pos = torch.bmm(current_pos, R) + rand_trans
-                 # conformer jiggle: add 0.05A noise to internal coordinates
-                 proposed_pos += torch.randn_like(proposed_pos) * 0.05
             else:
                  proposed_pos = torch.bmm(current_pos, R) + rand_trans
             
             with torch.no_grad():
-                prop_E, _, _ = self.phys.compute_energy(proposed_pos + com, pos_P_batch, q_L_batch, q_P_batch, x_L_batch, x_P_batch, step_progress=current_prog)
+                # [v71.4] Parallel Physics Update
+                prop_E, _, _ = phys_dispatcher(proposed_pos + com, pos_P_batch, q_L_batch, q_P_batch, x_L_batch, x_P_batch, current_prog)
             
             # Metropolis
             delta_E = prop_E - current_E
@@ -1871,8 +1893,8 @@ class MaxFlowExperiment:
             # [v69.5] Periodic HARD Checkpoint (Every 100 steps)
             if step % 100 == 0 or step == steps - 1:
                 with torch.no_grad():
-                    # Check current winners under hard physics
-                    hard_E, _, _ = self.phys.compute_energy(current_pos + com, pos_P_batch, q_L_batch, q_P_batch, x_L_batch, x_P_batch, step_progress=1.0)
+                    # Check current winners under hard physics (Parallel)
+                    hard_E, _, _ = phys_dispatcher(current_pos + com, pos_P_batch, q_L_batch, q_P_batch, x_L_batch, x_P_batch, 1.0)
                     win_idx = hard_E.argmin()
                     if hard_E[win_idx] < best_overall_E:
                         best_overall_E = hard_E[win_idx].item()
