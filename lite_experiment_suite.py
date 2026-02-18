@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v71.5 MaxFlow (ICLR 2026 - Reliability Hardening)"
+VERSION = "v71.6 MaxFlow (ICLR 2026 - Hotfix Synchrony)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -1857,10 +1857,13 @@ class MaxFlowExperiment:
             # Add small internal perturbations to atoms relative to COM
             # [v70.2] Conditional Jiggling for Ablation
             if getattr(self.config, 'no_jiggling', False):
-                 proposed_pos = torch.bmm(current_pos, R) + rand_trans
+                proposed_pos = torch.bmm(current_pos, R) + rand_trans
             elif step % 100 == 0:
+                proposed_pos = torch.bmm(current_pos, R) + rand_trans
+                # conformer jiggle: add 0.05A noise to internal coordinates (Fix v71.6)
+                proposed_pos += torch.randn_like(proposed_pos) * 0.05
             else:
-                 proposed_pos = torch.bmm(current_pos, R) + rand_trans
+                proposed_pos = torch.bmm(current_pos, R) + rand_trans
             
             with torch.no_grad():
                 # [v71.4] Parallel Physics Update
