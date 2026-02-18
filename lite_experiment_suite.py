@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v72.0 MaxFlow (ICLR 2026 - Golden Key Restoration)"
+VERSION = "v72.1 MaxFlow (ICLR 2026 - Atomic Multi-GPU Sync)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -1218,9 +1218,17 @@ class ParallelPhysicsDispatcher(nn.Module):
     def __init__(self, physics_engine):
         super().__init__()
         self.phys = physics_engine
+        # [v72.1] Multi-GPU Sync: Register parameters as buffers for DataParallel replication
+        self.register_buffer("vdw_radii", physics_engine.params.vdw_radii)
+        self.register_buffer("epsilon", physics_engine.params.epsilon)
+        self.register_buffer("standard_valencies", physics_engine.params.standard_valencies)
         
     def forward(self, pos_L, pos_P, q_L, q_P, x_L, x_P, step_progress):
-        # We wrap Alpha in a tensor to ensure consistent DataParallel return
+        # [v72.1] Device Injection: Ensure the internal engine uses the local GPU's buffer
+        self.phys.params.vdw_radii = self.vdw_radii
+        self.phys.params.epsilon = self.epsilon
+        self.phys.params.standard_valencies = self.standard_valencies
+        
         energy, e_hard, alpha = self.phys.compute_energy(pos_L, pos_P, q_L, q_P, x_L, x_P, step_progress)
         return energy, e_hard, torch.tensor([alpha], device=pos_L.device)
 
