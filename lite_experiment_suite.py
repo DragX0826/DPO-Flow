@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v72.2 MaxFlow (ICLR 2026 - Atomic Multi-GPU Sync v2)"
+VERSION = "v72.3 MaxFlow (ICLR 2026 - Atomic Hotfix Synchrony)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -1914,6 +1914,7 @@ class MaxFlowExperiment:
         return best_overall_pos, best_overall_E
 
     def run(self):
+        start_time = time.time() # [v72.3] Fixed NameError
         logger.info(f"🚀 Starting Experiment {VERSION} (TSO-Agentic Mode) on {self.config.target_name}...")
         convergence_history = [] 
         steps_to_09 = None 
