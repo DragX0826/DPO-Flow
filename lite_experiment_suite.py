@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v72.1 MaxFlow (ICLR 2026 - Atomic Multi-GPU Sync)"
+VERSION = "v72.2 MaxFlow (ICLR 2026 - Atomic Multi-GPU Sync v2)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -301,18 +301,19 @@ class ForceFieldParameters:
         self.softness_start = 5.0
         self.softness_end = 0.0
 
-class PhysicsEngine:
+class PhysicsEngine(nn.Module):
     """
     Differentiable Molecular Mechanics Engine (v21.0).
-    Supports:
-    - Electrostatics (Coulomb with soft-core)
-    - Van der Waals (Lennard-Jones 12-6 with soft-core)
-    - Bonded Harmonic Potentials
-    - Angular Harmonic Potentials
-    - Hydrophobic Clustering Reward
+    [v72.2] Refactored as nn.Module to ensure DataParallel device consistency.
     """
     def __init__(self, ff_params: ForceFieldParameters):
+        super().__init__()
         self.params = ff_params
+        # Register buffers so DataParallel replications handle device placement
+        self.register_buffer("vdw_radii", ff_params.vdw_radii)
+        self.register_buffer("epsilon", ff_params.epsilon)
+        self.register_buffer("standard_valencies", ff_params.standard_valencies)
+        
         # [v58.1] Golden Calculus: Force-Magnitude Annealing
         self.current_alpha = self.params.softness_start
         self.hardening_rate = 0.1 
@@ -387,7 +388,8 @@ class PhysicsEngine:
             radius_scale = 1.0
             
             type_probs_L = x_L[..., :9]
-            radii_L = (type_probs_L @ self.params.vdw_radii[:9].float()) * radius_scale
+            # [v72.2] Using registered buffers for device consistency
+            radii_L = (type_probs_L @ self.vdw_radii[:9].float()) * radius_scale
             if x_P.dim() == 2: x_P = x_P.unsqueeze(0)
             prot_radii_map = torch.tensor([1.7, 1.55, 1.52, 1.8], device=pos_P.device, dtype=torch.float32)
             radii_P = (x_P[..., :4] @ prot_radii_map) * radius_scale
@@ -406,6 +408,7 @@ class PhysicsEngine:
                  e_elec = (332.06 * q_L.unsqueeze(1) * q_P.unsqueeze(0)) / (dielectric * torch.sqrt(soft_dist_sq))
             
             # vdW
+            # [v72.2] Using registered buffers for device consistency
             inv_sc_dist = sigma_ij.pow(2) / (dist_sq + self.current_alpha * sigma_ij.pow(2) + 1e-6)
             # [v61.3 Fix] Hyper-Attraction (10.0): "Vacuum Suction" into global minimum
             e_vdw = 10.0 * (inv_sc_dist.pow(6) - inv_sc_dist.pow(3))
@@ -486,7 +489,8 @@ class PhysicsEngine:
         
         # Predicted standard valency per atom
         type_probs = x_L[..., :9] # C, N, O, S, F, P, Cl, Br, I
-        target_valency = type_probs @ self.params.standard_valencies # (B, N)
+        # [v72.2] Using registered buffers for device consistency
+        target_valency = type_probs @ self.standard_valencies # (B, N)
         
         # [v58.3] Batch-aware mean (B, N) -> (B,)
         valency_mse = (neighbors - target_valency).pow(2).mean(dim=1)
@@ -527,8 +531,8 @@ class PhysicsEngine:
         bond_idx: (2, B) edges
         angle_idx: (3, A) triplets
         """
-        e_bond = torch.tensor(0.0, device=device)
-        e_angle = torch.tensor(0.0, device=device)
+        e_bond = torch.tensor(0.0, device=pos_L.device)
+        e_angle = torch.tensor(0.0, device=pos_L.device)
         
         # 1. Bond Potentials (Harmonic)
         if bond_idx is not None and bond_idx.size(1) > 0:
@@ -547,7 +551,7 @@ class PhysicsEngine:
         # 3. Intra-molecular Repulsion (Self-Clash)
         # Exclude weighted 1-2 and 1-3 interactions?
         # For simplicity in Ab Initio: Repel all non-bonded pairs
-        d_intra = torch.cdist(pos_L, pos_L) + torch.eye(pos_L.size(0), device=device) * 10
+        d_intra = torch.cdist(pos_L, pos_L) + torch.eye(pos_L.size(1), device=pos_L.device).unsqueeze(0) * 10
         d_eff = torch.sqrt(d_intra.pow(2) + softness)
         # Clash if d < 1.2A
         e_clash = torch.relu(1.2 - d_eff).pow(2).sum()
@@ -565,7 +569,7 @@ class PhysicsEngine:
         mask_P = x_P[..., 0] > 0.5 # (B, M)
         
         if not mask_L.any() or not mask_P.any():
-            return torch.tensor(0.0, device=device)
+            return torch.tensor(0.0, device=pos_L.device)
             
         dist = torch.cdist(pos_L, pos_P) # (B, N, M)
         
@@ -1214,21 +1218,14 @@ class ParallelPhysicsDispatcher(nn.Module):
     """
     Wraps the PhysicsEngine to allow DataParallel distribution
     of heavy physics calculations during MCMC.
+    [v72.2] Simplified: Relies on PhysicsEngine being an nn.Module.
     """
     def __init__(self, physics_engine):
         super().__init__()
         self.phys = physics_engine
-        # [v72.1] Multi-GPU Sync: Register parameters as buffers for DataParallel replication
-        self.register_buffer("vdw_radii", physics_engine.params.vdw_radii)
-        self.register_buffer("epsilon", physics_engine.params.epsilon)
-        self.register_buffer("standard_valencies", physics_engine.params.standard_valencies)
         
     def forward(self, pos_L, pos_P, q_L, q_P, x_L, x_P, step_progress):
-        # [v72.1] Device Injection: Ensure the internal engine uses the local GPU's buffer
-        self.phys.params.vdw_radii = self.vdw_radii
-        self.phys.params.epsilon = self.epsilon
-        self.phys.params.standard_valencies = self.standard_valencies
-        
+        # DataParallel automatically handles self.phys as a submodule
         energy, e_hard, alpha = self.phys.compute_energy(pos_L, pos_P, q_L, q_P, x_L, x_P, step_progress)
         return energy, e_hard, torch.tensor([alpha], device=pos_L.device)
 
@@ -1992,6 +1989,7 @@ class MaxFlowExperiment:
         model = RectifiedFlow(backbone).to(device)
         
         # [v70.5] Multi-GPU Support (T4 x2)
+        self.phys.to(device) # [v72.2] Ensure physics buffers are on primary device
         if torch.cuda.device_count() > 1:
             logger.info(f"   🚀 [Multi-GPU] Enabling DataParallel on {torch.cuda.device_count()} GPUs.")
             model = nn.DataParallel(model)
