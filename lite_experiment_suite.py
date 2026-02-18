@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v71.4 MaxFlow (ICLR 2026 - MCMC Parallelization)"
+VERSION = "v71.5 MaxFlow (ICLR 2026 - Reliability Hardening)"
 
 # --- GLOBAL ESM SINGLETON (v49.0 Zenith) ---
 _ESM_MODEL_CACHE = {}
@@ -2401,7 +2401,8 @@ class MaxFlowExperiment:
                 loss_valency = torch.nan_to_num(loss_valency, nan=0.0)
                 
                 # Weighted Loss Synthesis
-                loss = loss_fm + 0.1 * jacob_reg + 0.05 * loss_semantic + loss_anchor + 10.0 * loss_valency
+                # [v71.5] Hardened Valency: Increase weight to 50.0 to force chemical validity
+                loss = loss_fm + 0.1 * jacob_reg + 0.05 * loss_semantic + loss_anchor + 50.0 * loss_valency
 
                 # [v59.5 Fix] NaN Sentry inside the loop
                 # Check for NaNs immediately after backward
@@ -2416,9 +2417,9 @@ class MaxFlowExperiment:
                         opt.zero_grad()
                     continue # Skip to next step
                 
-                # [v70.6] Reporting Cap: Prevent "Millions" in logs by capping repulsion display
-                # Note: Physics still uses raw values for gradients, this is display only
-                batch_energy = torch.clamp(total_energy.detach(), max=1000.0) 
+                # [v71.5] Uncapped Reporting: Show real minimization progress
+                # Capping at 1000.0 was hiding the physics resolution in logs.
+                batch_energy = total_energy.detach() 
                 
                 # Early Stopping Logic (Monitor Energy only for v58.1)
                 current_metric = batch_energy.min().item()
@@ -2697,13 +2698,21 @@ class MaxFlowExperiment:
         self.visualizer.plot_diversity_pareto(df_tmp, filename=f"fig3_diversity_{self.config.target_name}.pdf")
         
         # Save Outputs
+        # [v71.5] Speed Metric for Pareto plotting
+        duration = time.time() - start_time
+        speed = steps / duration if duration > 0 else 0.0
+        
         result_data = {
             'name': f"{self.config.target_name}_{'Muon' if self.config.use_muon else 'Adam'}",
             'pdb': self.config.pdb_id,
             'history_E': history_E,
             'best_pos': best_pos,
             'final': final_E,
-            'rmsd': best_rmsd
+            'rmsd': best_rmsd,
+            'yield': yield_rate,
+            'Speed': speed, # Essential for fig2_pareto_frontier.pdf
+            'StepsTo7': steps_to_7 if steps_to_7 is not None else 1000,
+            'StepsTo09': steps_to_09 if steps_to_09 is not None else 1000,
         }
         self.results.append(result_data)
         
@@ -2905,7 +2914,8 @@ def run_scaling_benchmark():
             torch.cuda.reset_peak_memory_stats()
             # Wrap in autocast to match production
             with torch.cuda.amp.autocast(enabled=torch.cuda.is_available()):
-                _ = backbone(data, t, pos, x_P, pos_P)
+                # [v71.5] Atomic Signature Fix for Benchmark
+                _ = backbone(t_flow=t, pos_L=pos, x_L=x, x_P=x_P, pos_P=pos_P, batch_indices=batch)
             peak_vram = torch.cuda.max_memory_allocated() / (1024**3) # GB
             vram_usage.append(peak_vram)
             print(f"   N={n}: Peak VRAM = {peak_vram:.2f} GB")
