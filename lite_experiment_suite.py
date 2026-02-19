@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v89.1 alpha MaxFlow (The Total Honesty Pass)"
+VERSION = "v90.0 alpha MaxFlow (The Stability Sweep)"
 
 # [v88.0] Enforce Determinism for Scientific Parity (CPU vs GPU)
 torch.backends.cudnn.deterministic = True
@@ -1095,14 +1095,24 @@ class PairGeometryEncoder(nn.Module):
         """
         # For simplicity in this implementation, we operate on the sub-sampled protein
         # pos_L is already flattened across batch.
+        # [v90.0 Stability Fix] Handle 2D vs 3D Protein Input
+        # pos_L is (B*N, 3), batch_indices is (B*N,)
         B = batch_indices.max().item() + 1
         N = pos_L.size(0) // B 
-        M = pos_P.size(0) // B
         
+        # [v90.0] If pos_P is 2D [M, 3], it's shared across batch.
+        # If pos_P is 3D [B, M, 3], it's already batched.
+        if pos_P.dim() == 2:
+            M = pos_P.size(0)
+            pos_P_b = pos_P.unsqueeze(0).repeat(B, 1, 1)
+            h_P_b = h_P.unsqueeze(0).repeat(B, 1, 1) if h_P.dim() == 2 else h_P
+        else:
+            M = pos_P.size(1)
+            pos_P_b = pos_P
+            h_P_b = h_P
+            
         pos_L_b = pos_L.view(B, N, 3)
-        pos_P_b = pos_P.view(B, M, 3)
         h_L_b = h_L.view(B, N, -1)
-        h_P_b = h_P.view(B, M, -1)
         
         # (B, N, M, 3)
         diff = pos_L_b.unsqueeze(2) - pos_P_b.unsqueeze(1)
@@ -2576,7 +2586,8 @@ class MaxFlowExperiment:
         # [v85.3 SPE Caching] Pre-calculate protein embedding before use
         with torch.no_grad():
             h_P_full = backbone.perception(x_P.unsqueeze(0)).detach()
-            esm_anchor = h_P_full.mean(dim=1).detach()
+            # [v90.0 Fix] Unify esm_anchor shape to (1, 1, H) for reliable broadcasting
+            esm_anchor = h_P_full.mean(dim=1, keepdim=True).detach()
 
         # [VISUALIZATION] Step 0 Vector Field (Before Optimization)
         # Run a dummy forward pass to get initial v_pred
@@ -2641,10 +2652,10 @@ class MaxFlowExperiment:
         with torch.no_grad():
             x_P_batched_anchor = x_P.unsqueeze(0).repeat(B, 1, 1)
             # Use perception to get biological anchor for semantic consistency
-            esm_anchor = backbone.perception(x_P_batched_anchor).mean(dim=1, keepdim=True).detach() # (B, 1, H)
-            # Pre-warm x_L (Biological Warm-up)
+            # [v90.0 Fix] esm_anchor is (B, 1, H) or (1, 1, H)
+            # Ensure context_projected is updated correctly
             context_projected = torch.zeros(B, N, D, device=device)
-            context_projected[..., :esm_anchor.shape[-1]] = esm_anchor.repeat(1, N, 1)
+            context_projected[..., :esm_anchor.shape[-1]] = esm_anchor.repeat(B, N, 1) if esm_anchor.size(0) == 1 else esm_anchor.repeat(1, N, 1)
             x_L.data.add_(context_projected * 0.1)
         
         # [v48.0] Standardized Batch Logic: (B, N, D)
@@ -2918,12 +2929,12 @@ class MaxFlowExperiment:
                     # 1. Diversity Repulsion (Replica Exchange)
                     div_force = self.diversity_buffer.compute_diversity_force(pos_L)
                     with torch.no_grad():
-                        pos_L.copy_(pos_L + div_force) 
+                        pos_L.data.copy_(pos_L + div_force) 
                     
                     # 2. Sequential Phase-Modulated Asynchronous Noise
                     p_noise = self.diversity_buffer.phase_modulated_noise(step, scale=0.05 * (1.0-progress))
                     with torch.no_grad():
-                        pos_L.copy_(pos_L + torch.randn_like(pos_L) * p_noise)
+                        pos_L.data.copy_(pos_L + torch.randn_like(pos_L) * p_noise)
                     
                     # 3. Precision RK4 Integration (The 'Geodesic' update)
                     dt_rk4 = 1.0 / self.config.steps 
