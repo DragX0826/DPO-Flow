@@ -1,17 +1,12 @@
-\begin{table}[h]
-\centering
-\caption{MaxFlow v70.0 (The Master Key) Cross-Target Performance on ICLR 2026 Benchmarks}
-\label{tab:maxflow_v70_results}
-\begin{tabular}{lcccc}
+\begin{table}
+\caption{MaxFlow v91.1 alpha MaxFlow (Final Audit & Flight Check) Performance (SR: 0.0\%, Yield: N/A\%, Stereo: 0.0\%)}
+\begin{tabular}{lllllllllll}
 \toprule
-\textbf{Target PDB} & \textbf{Backbone} & \textbf{Energy (kcal/mol)} & \textbf{RMSD (\AA)} & \textbf{Status} \\
+Target & Optimizer & Energy & RMSD & Yield(%) & AlignStep & Top10%_E & QED & Clash & Stereo & Status \\
 \midrule
-3PBL (GPCR) & RGF (v72.5) & -17.08 & \textbf{2.32} & \textbf{Kaggle Validated} \\
-1UYD (Kinase) & RGF (v72.5) & -9.92 & \textbf{2.67} & \textbf{Expert Grade} \\
-7SMV (Large) & RGF (v72.5) & 161,217* & 2.98 & Infiltration Mode \\
-\midrule
-DiffDock (2023) & Baseline & N/A & 2.0 -- 5.0 & Comparative \\
-MolDiff (2024) & Baseline & N/A & 1.5 -- 4.0 & Comparative \\
+REPLICA (Custom) & AutoDock Vina (Standard) & N/A & N/A & N/A & N/A & N/A & N/A & N/A & N/A & Baseline \\
+REPLICA (Custom) & DiffDock (Official Run) & N/A & N/A & N/A & N/A & N/A & N/A & N/A & N/A & Baseline \\
+1UYD & Muon & 50.5 & 41.73 & 0.0 & 10 & 50.48 & N/A & N/A & Fail(Ex) & Novel/DeNovo \\
 \bottomrule
 \end{tabular}
 \end{table}

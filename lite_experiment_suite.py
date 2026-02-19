@@ -13,6 +13,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.checkpoint
 import matplotlib
 matplotlib.use('Agg') # [v35.4] Force Non-Interactive Backend for Kaggle/Server
 import matplotlib.pyplot as plt
@@ -24,7 +25,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple, Union
 
 # --- SECTION 0: VERSION & CONFIGURATION ---
-VERSION = "v91.0 alpha MaxFlow (CPU Turbo & Production Ready)"
+VERSION = "v91.1 alpha MaxFlow (Final Audit & Flight Check)"
 
 # [v88.0] Enforce Determinism for Scientific Parity (CPU vs GPU)
 torch.backends.cudnn.deterministic = True
@@ -397,6 +398,13 @@ class PhysicsEngine(nn.Module):
             x_L = x_L.float()
             x_P = x_P.float()
 
+            # [v91.1 Stability] Ensure batch sizes match before concatenation
+            B_L = pos_L.shape[0]
+            B_P = pos_P.shape[0]
+            if B_L != B_P:
+                if B_P == 1: pos_P = pos_P.expand(B_L, -1, -1)
+                elif B_L == 1: pos_L = pos_L.expand(B_P, -1, -1)
+            
             # [v59.3 Fix] Joint Centric Alignment
             combined_pos = torch.cat([pos_L, pos_P], dim=1) 
             joint_com = combined_pos.mean(dim=1, keepdim=True) 
@@ -419,6 +427,10 @@ class PhysicsEngine(nn.Module):
             # [v72.2] Using registered buffers for device consistency
             radii_L = (type_probs_L @ self.vdw_radii[:9].float()) * radius_scale
             if x_P.dim() == 2: x_P = x_P.unsqueeze(0)
+            # [v91.1 Fix] Handle batch mismatch for x_P
+            if x_P.size(0) != type_probs_L.size(0):
+                if x_P.size(0) == 1: x_P = x_P.expand(type_probs_L.size(0), -1, -1)
+            
             prot_radii_map = torch.tensor([1.7, 1.55, 1.52, 1.8], device=pos_P.device, dtype=torch.float32)
             radii_P = (x_P[..., :4] @ prot_radii_map) * radius_scale
             sigma_ij = radii_L.unsqueeze(-1) + radii_P.unsqueeze(1)
@@ -429,8 +441,14 @@ class PhysicsEngine(nn.Module):
             
             # Coulomb
             if q_L.dim() == 2: # (Batch, N)
+                 B_L = q_L.size(0)
+                 # [v91.1 Fix] Handle batch mismatch for q_P
+                 if q_P.dim() == 1: q_P = q_P.unsqueeze(0)
+                 if q_P.size(0) != B_L:
+                     if q_P.size(0) == 1: q_P = q_P.expand(B_L, -1)
+                 
                  q_L_exp = q_L.unsqueeze(2) # (B, N, 1)
-                 q_P_exp = q_P.view(q_P.size(0) if q_P.dim() > 1 else 1, 1, -1)
+                 q_P_exp = q_P.view(q_P.size(0), 1, -1)
                  e_elec = (332.06 * q_L_exp * q_P_exp) / (dielectric * torch.sqrt(soft_dist_sq))
             else: # (N,)
                  e_elec = (332.06 * q_L.unsqueeze(1) * q_P.unsqueeze(0)) / (dielectric * torch.sqrt(soft_dist_sq))
@@ -2675,10 +2693,12 @@ class MaxFlowExperiment:
         with torch.no_grad():
             x_P_batched_anchor = x_P.unsqueeze(0).repeat(B, 1, 1)
             # Use perception to get biological anchor for semantic consistency
-            # [v90.0 Fix] esm_anchor is (B, 1, H) or (1, 1, H)
-            # Ensure context_projected is updated correctly
+            # [v90.0 Fix] esm_anchor is (B, 1, H)
+            esm_anchor = backbone.perception(x_P_batched_anchor).mean(dim=1, keepdim=True).detach()
+            
+            # Pre-warm x_L (Biological Warm-up)
             context_projected = torch.zeros(B, N, D, device=device)
-            context_projected[..., :esm_anchor.shape[-1]] = esm_anchor.repeat(B, N, 1) if esm_anchor.size(0) == 1 else esm_anchor.repeat(1, N, 1)
+            context_projected[..., :esm_anchor.shape[-1]] = esm_anchor.repeat(1, N, 1)
             x_L.data.add_(context_projected * 0.1)
         
         # [v48.0] Standardized Batch Logic: (B, N, D)
@@ -3052,9 +3072,9 @@ class MaxFlowExperiment:
                     # Penalize drift from the reference policy (model_ref)
                     loss_kl = F.mse_loss(v_pred, v_ref)
                 
-                # Pillar 4: Semantic Anchoring [v58.1 Fix Shape]
+                # Pillar 4: Semantic Anchoring [v91.1 Fix Broadcasting]
                 s_mean = s_current.view(B, N, -1).mean(dim=1) # (B, H)
-                loss_semantic = (s_mean - esm_anchor.view(B, -1)).pow(2).mean()
+                loss_semantic = (s_mean - esm_anchor.squeeze(1)).pow(2).mean()
                 
                 # [v66.0] Master Forge: Three-Phase Alpha Annealing
                 # 1. Phase 1 (Thermal Softening): Steps 0-30% -> Alpha = 2.0 (Search)
