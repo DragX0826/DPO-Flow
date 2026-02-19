@@ -2534,6 +2534,11 @@ class MaxFlowExperiment:
              # [v35.0] Split Optimizers per user request (Muon vs AdamW)
              params = list(model.parameters()) + [pos_L, q_L, x_L]
         
+        # [v85.3 SPE Caching] Pre-calculate protein embedding before use
+        with torch.no_grad():
+            h_P_full = backbone.perception(x_P.unsqueeze(0)).detach()
+            esm_anchor = h_P_full.mean(dim=1).detach()
+
         # [VISUALIZATION] Step 0 Vector Field (Before Optimization)
         # Run a dummy forward pass to get initial v_pred
         with torch.no_grad():
@@ -2568,19 +2573,14 @@ class MaxFlowExperiment:
             scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=self.config.steps)
         
         # [v56.0] Anchor Representation Alignment (Prasad et al., 2026)
-        # [v85.0 SPE Caching] Pre-calculate protein embedding once to displace ESM.
+        # [v81.0 VRAM Hardening] ESM Offloading (Audit Fix)
+        # After extracting the biological anchor and embedding, offload both to CPU.
         with torch.no_grad():
-            # Use single slice to get the full protein embedding
-            h_P_full = backbone.perception(x_P.unsqueeze(0)).detach() # (1, M, H)
-            esm_anchor = h_P_full.mean(dim=1).detach() # (1, H)
-            
-            # [v81.0 VRAM Hardening] ESM Offloading (Audit Fix)
-            # After extracting the biological anchor and embedding, offload both to CPU.
             if hasattr(backbone, 'perception'): backbone.perception.to('cpu')
             if hasattr(model_ref, 'perception'): model_ref.perception.to('cpu')
             
             torch.cuda.empty_cache()
-            logger.info("   🧩 [v85.0 VRAM Hub] Perception Models offloaded to CPU. Using SPE Caching.")
+            logger.info("   🧩 [v85.3 VRAM Hub] Perception Models offloaded to CPU. Using SPE Caching.")
         
         # [NEW] AMP & Stability Tools
         scaler = torch.cuda.amp.GradScaler(enabled=torch.cuda.is_available())
