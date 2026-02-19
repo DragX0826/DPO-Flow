@@ -1379,9 +1379,11 @@ class MaxFlowBackbone(nn.Module):
 
         # [v80.0 Precision] Protein Structure-Sequence Embedding
         # Handled by ESM-2 and GVP spatial priors.
-        n_p_limit = min(200, pos_P.size(0))
-        pos_P_sub = pos_P[:n_p_limit]
-        x_P_sub = x_P[:n_p_limit]
+        # [v85.4 Fix] Correct Slicing for (1, M, 3) Protein
+        # In DataParallel/SPE mode, pos_P is [1, M, 3]. Slicing must target dim 1.
+        n_p_limit = min(200, pos_P.size(1))
+        pos_P_sub = pos_P[0, :n_p_limit] # Squeeze to 2D [M_sub, 3] for internal ops
+        x_P_sub = x_P[0, :n_p_limit]     # Squeeze to 2D [M_sub, D]
 
         # 1. Bio-Perception (PLaTITO)
         # [v85.0 SPE Caching] If pre-computed h_P is provided, skip perception
@@ -1392,6 +1394,7 @@ class MaxFlowBackbone(nn.Module):
             h_P = h_P[:n_p_limit]
         else:
             h_P = self.perception(x_P_sub)
+            if h_P.dim() == 3: h_P = h_P.squeeze(0) # Ensure 2D [M_sub, H] consistency
         
         h_P = self.proj_P(h_P)
         
