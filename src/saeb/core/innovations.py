@@ -20,19 +20,19 @@ class ShortcutFlowLoss(nn.Module):
 
     def forward(self, v_pred, x1_pred, confidence, v_target, x1_target, B, N):
         """Train-mode loss. x1_target = pos_native expanded to batch."""
-        v_pred = v_pred.view(B, N, 3)
-        v_target = v_target.view(B, N, 3)
+        # Bug Fix B: Robust shape handling
+        # Ensure everything is (B, N, ...)
+        v_pred = v_pred.reshape(B, N, 3)
+        v_target = v_target.reshape(B, N, 3)
+        x1_target = x1_target.view(-1, N, 3) # (1 or B, N, 3)
+        if x1_target.size(0) == 1:
+            x1_target = x1_target.expand(B, -1, -1)
+        
+        x1_pred = x1_pred.reshape(B, N, 3)
+        conf = confidence.reshape(B, N, 1)
+
         l_fm = F.huber_loss(v_pred, v_target, delta=1.0)
 
-        # Fix: Ensure x1_target is handled correctly regardless of input shape
-        if x1_target.dim() == 2: # (N, 3)
-            x1_target = x1_target.view(1, N, 3).expand(B, -1, -1)
-        elif x1_target.dim() == 3: # (B or 1, N, 3)
-            if x1_target.size(0) == 1:
-                x1_target = x1_target.expand(B, -1, -1)
-        
-        x1_pred = x1_pred.view(B, N, 3)
-        conf = confidence.view(B, N, 1)
         # Confidence gates the shortcut loss — high confidence → strong x1 supervision
         l_x1 = (conf * F.huber_loss(x1_pred, x1_target, delta=2.0, reduction='none')).mean()
 
@@ -89,29 +89,29 @@ def pat_step(pos_L, v_pred, f_phys, alpha_ema, confidence, dt):
     new_pos = pos_L + velocity * (step_scale * dt)
     return new_pos
 
-def langevin_noise(pos_shape, temperature, dt, device, x_L=None):
+def langevin_noise(pos_shape, temperature, dt, device, x_L=None, mass_precomputed=None):
     """
     Generates Langevin stochastic noise: sqrt(2*T*dt/m) * N(0,1)
-    Supports mass-weighting based on atom types.
+    Supports mass-weighting based on atom types or precomputed mass tensor.
     """
     if temperature <= 1e-6:
         return torch.zeros(pos_shape, device=device)
     
     noise = torch.randn(pos_shape, device=device)
     
-    # Default mass = 1.0 (Hydrogen or generic)
-    mass = torch.ones((pos_shape[0], pos_shape[1], 1), device=device)
-    
-    if x_L is not None:
+    if mass_precomputed is not None:
+        mass = mass_precomputed
+    elif x_L is not None:
+        # Default mass = 1.0 (Hydrogen or generic)
         # x_L has [C, N, O, S, F, P, Cl, Br, I] at indices 0-8
         types = x_L[..., :9] # (B, N, 9)
         # Atomic masses: C=12, N=14, O=16, S=32, F=19, P=31, Cl=35, Br=80, I=127
         mass_coeffs = torch.tensor([12.0, 14.0, 16.0, 32.0, 19.0, 31.0, 35.0, 80.0, 127.0], device=device)
         mass = (types * mass_coeffs).sum(dim=-1, keepdim=True)
         # Issue 7 Fix: Mass Protection
-        # Soft probabilities might lead to mass < 12.0 (Carbon); 
-        # clamp to Carbon-scale to prevent noise from exploding on light/uncertain atoms.
         mass = torch.clamp(mass, min=12.0) 
+    else:
+        mass = torch.ones((pos_shape[0], pos_shape[1], 1), device=device)
     
     # Fluctuating-Dissipation Theorem: scale = sqrt(2 * T * dt / mass)
     scale = torch.sqrt(torch.tensor(2.0 * temperature * dt, device=device) / mass)

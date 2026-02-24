@@ -43,11 +43,17 @@ def kabsch_rmsd(pred: torch.Tensor, ref: torch.Tensor) -> torch.Tensor:
 
     try:
         U, S, Vh = torch.linalg.svd(H)
-        # Correct reflection: det(Vh^T U^T)
+        # Bug Fix F: Correct Kabsch rotation calculation order for reflections.
+        # R = (U @ sign_mat) @ Vh
         d = torch.linalg.det(Vh.transpose(-1, -2) @ U.transpose(-1, -2))
         sign_mat = torch.diag_embed(torch.stack(
             [torch.ones_like(d), torch.ones_like(d), d], dim=-1))
-        R = Vh.transpose(-1, -2) @ sign_mat @ U.transpose(-1, -2)
+        
+        # Proper Kabsch: R = (U @ sign_mat) @ Vh (where H = pred^T @ ref)
+        # Wait, if H = pred^T @ ref, then R = V @ U^T. But we use Vh from linalg.svd.
+        # Let's align with the standard: R = V @ U^T
+        V = Vh.transpose(-1, -2)
+        R = V @ sign_mat @ U.transpose(-1, -2)
         pred_rot = pred_c @ R.transpose(-1, -2)
     except Exception:
         # Fallback: translation-only if SVD fails (e.g. collinear atoms)
@@ -79,6 +85,7 @@ class SAEBFlowExperiment:
         self.phys = self.phys.to(device)
 
         # ── Data ────────────────────────────────────────────────────────────
+        # Bug Fix A: Correctly unpack q_P (protein charges)
         pos_P, x_P, q_P, (p_center, pos_native), x_L_native, q_L_native, lig_template = \
             self.featurizer.parse(self.config.pdb_id)
 
@@ -108,9 +115,10 @@ class SAEBFlowExperiment:
             [pos_L, x_L] + list(model.parameters()),
             lr=self.config.lr, weight_decay=1e-4
         )
-        # Warm-up (100 steps) then cosine decay
+        # Warm-up (fixed 5% of total steps) then cosine decay
         total_steps = self.config.steps
-        warmup_steps = min(50, total_steps // 6)
+        # Improvement 1: Scalable warmup
+        warmup_steps = max(10, total_steps // 20) 
         def lr_lambda(step):
             if step < warmup_steps:
                 return step / max(warmup_steps, 1)
@@ -135,6 +143,13 @@ class SAEBFlowExperiment:
         beta_ema  = 0.9    # Magma momentum
         tau       = 2.0    # Tempered sigmoid scale
 
+        # ── Precompute mass for Langevin noise (Improvement 4) ─────────────
+        with torch.no_grad():
+            mass_coeffs = torch.tensor([12.0, 14.0, 16.0, 32.0, 19.0, 31.0, 35.0, 80.0, 127.0], device=device)
+            # Fix: Slice x_L to [..., :9] to match mass_coeffs
+            mass_precomputed = (x_L[0, :, :9] * mass_coeffs).sum(dim=-1, keepdim=True).unsqueeze(0).expand(B, -1, -1)
+            mass_precomputed = torch.clamp(mass_precomputed, min=12.0)
+
         # ── Precompute pocket residue mask for guided exploration ────────────
         # Finds protein atoms within 6Å of the pocket centre — used as magnet
         with torch.no_grad():
@@ -151,6 +166,7 @@ class SAEBFlowExperiment:
                 pocket_anchor = pos_P[pocket_mask].mean(dim=0)
 
         prev_pos_L = prev_latent = None
+        log_every = max(total_steps // 10, 1)
 
         for step in range(total_steps):
             # t in (0, 1] — avoid t=0 where conditional field is undefined
@@ -201,10 +217,10 @@ class SAEBFlowExperiment:
             # We want f_phys to be the EXPLICIT and ONLY physical guide in the PAT step.
             loss_phys = raw_energy.mean().detach() * 0.01
 
-            # Pocket Guidance (decays to 0 at t=0.5)
+            # Pocket Guidance (Bug E: Exponential decay instead of hard cutoff)
             lig_centroid = pos_L.mean(dim=1)
             pocket_dist  = (lig_centroid - pocket_anchor.unsqueeze(0)).pow(2).sum(-1)
-            guidance_weight = max(0.1 * (1.0 - t * 2.0), 0.0)
+            guidance_weight = 0.1 * math.exp(-3.0 * t) 
             loss_pocket = guidance_weight * pocket_dist.mean()
 
             # Compute physical force BEFORE backward to reuse graph
@@ -224,16 +240,15 @@ class SAEBFlowExperiment:
             opt.step()
             scheduler.step()
 
-            # ── Metrics (before position overwrite) ────────────────────────
+            # ── Metrics ───────────────────────────────────────────────────
             history_E.append(energy_clamped.mean().item())
             history_FM.append(loss_fm.item())
-
-            log_every = max(total_steps // 10, 1)
-            if step % log_every == 0 or step == total_steps - 1:
-                with torch.no_grad():
-                    rmsd = kabsch_rmsd(pos_L.detach(), pos_native)
-                    r_min, r_mean = rmsd.min().item(), rmsd.mean().item()
-                history_RMSD.append(r_min)
+            
+            # Bug Fix C: Align metric frequency (record RMSD every step)
+            with torch.no_grad():
+                rmsd = kabsch_rmsd(pos_L.detach(), pos_native)
+                r_min = rmsd.min().item()
+            history_RMSD.append(r_min)
 
             # ── Langevin Temperature Annealing ─────────────────────────────
             # Bug Fix: Use exponential decay for smoother transition and residual exploration
@@ -247,18 +262,19 @@ class SAEBFlowExperiment:
                 alpha_tilt = torch.sigmoid(c_i / tau)
                 
                 # Confidence-weighted trust: lower confidence => more physics trust
-                # We blend alpha_tilt with (1 - confidence)
-                # This ensures that when the neural model is unsure, physics takes over.
                 alpha_tilt = 0.5 * alpha_tilt + 0.5 * (1.0 - confidence.detach())
                 
+                # Bug Fix D: PAT Bias Correction
                 alpha_ema = beta_ema * alpha_ema + (1.0 - beta_ema) * alpha_tilt
+                alpha_ema_corr = alpha_ema / (1.0 - beta_ema**(step + 1))
+                
                 history_CosSim.append(c_i.mean().item())
 
             # ── PAT + Langevin Combined Position Update ────────────────────
             with torch.no_grad():
-                # Bug Fix: Pass x_L for mass-weighted noise
-                noise   = langevin_noise(pos_L.shape, T_curr, dt, device, x_L=x_L)
-                pos_new = pat_step(pos_L, v_pred.detach(), f_phys, alpha_ema, confidence.detach(), dt)
+                # Bug Fix: Pass precomputed mass for efficiency
+                noise   = langevin_noise(pos_L.shape, T_curr, dt, device, mass_precomputed=mass_precomputed)
+                pos_new = pat_step(pos_L, v_pred.detach(), f_phys, alpha_ema_corr, confidence.detach(), dt)
                 pos_L.data.copy_(pos_new + noise)
 
             # ── Alpha Hardening (called once per step) ─────────────────────

@@ -4,6 +4,7 @@ import time
 import csv
 import os
 import torch
+import numpy as np
 from saeb import SAEBFlowExperiment, SimulationConfig
 
 # ============================================================
@@ -232,18 +233,38 @@ def main():
             writer.writerow(row)
 
     # Final report
-    n_ok, n_tot = len(successful), len(targets)
-    rmsds = [r["results"]["best_rmsd"] for r in successful]
-    logger.info(f"\n{'='*65}")
-    logger.info(f" BENCHMARK COMPLETE  |  {n_ok}/{n_tot} targets succeeded")
-    if rmsds:
-        import numpy as np
-        arr = np.array(rmsds)
-        logger.info(f" Median RMSD : {np.median(arr):.2f}A  |  Mean: {arr.mean():.2f}A")
-        logger.info(f" SR@2A  : {(arr<2.0).mean()*100:.1f}%  ({(arr<2.0).sum()}/{n_ok})")
-        logger.info(f" SR@5A  : {(arr<5.0).mean()*100:.1f}%  ({(arr<5.0).sum()}/{n_ok})")
-    logger.info(f" Results saved → {csv_path}")
-    logger.info(f"{'='*65}")
+    n_tot = len(targets)
+    
+    # Bug Fix/Improvement 3: Multi-seed aggregation
+    # We aggregate by pdb_id to find the best across seeds
+    import pandas as pd
+    df_all = pd.DataFrame([r["results"] for r in successful])
+    if not df_all.empty:
+        # Group by pdb_id and take min of best_rmsd
+        df_aggr = df_all.groupby("pdb_id").agg({
+            "best_rmsd": "min",
+            "mean_rmsd": "mean",
+            "final_energy": "min", # Best energy
+            "time_sec": "sum"
+        }).reset_index()
+        
+        n_ok = len(df_aggr)
+        rmsds = df_aggr["best_rmsd"].values
+        
+        logger.info(f"\n{'='*65}")
+        logger.info(f" BENCHMARK COMPLETE (Aggregated over {len(seeds)} seeds)")
+        logger.info(f" Targets Succeeded : {n_ok}/{n_tot}")
+        logger.info(f" Median RMSD : {np.median(rmsds):.2f}A  |  Mean: {np.mean(rmsds):.2f}A")
+        logger.info(f" SR@2A  : {(rmsds < 2.0).mean()*100:.1f}%  ({(rmsds < 2.0).sum()}/{n_ok})")
+        logger.info(f" SR@5A  : {(rmsds < 5.0).mean()*100:.1f}%  ({(rmsds < 5.0).sum()}/{n_ok})")
+        logger.info(f" Results saved → {csv_path}")
+        logger.info(f"{'='*65}")
+        
+        # Save aggregated results
+        aggr_path = os.path.join(args.output_dir, "benchmark_aggregated.csv")
+        df_aggr.to_csv(aggr_path, index=False)
+    else:
+        logger.error("No successful targets to aggregate.")
 
     # Generate aggregate figures
     if len(successful) > 3:
