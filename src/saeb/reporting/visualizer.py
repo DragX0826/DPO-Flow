@@ -8,6 +8,7 @@ Produces the 6 core figures required for molecular docking papers:
   Fig 4: Ablation Study       (bar chart of method variants)
   Fig 5: Flow Vector Field    (2D PCA projection of v_pred)
   Fig 6: Benchmark Summary    (per-target bar chart, color-coded)
+  Fig 7: Flow-Force Alignment (CosSim trend)
 """
 
 import os
@@ -347,6 +348,25 @@ class PublicationVisualizer:
         ax.set_title("RMSD Convergence")
         ax.legend()
         print(self.interpreter.interpret_rmsd_trend(history_rmsd))
+        self._save(fig, filename)
+
+    # ── Fig 7: Flow-Force Alignment ──────────────────────────────────────────
+    
+    def plot_alignment_trends(self, history_cos_sim, filename="fig7_alignment.pdf"):
+        """Plot cosine similarity between flow and physical forces."""
+        if not history_cos_sim: return
+        _apply_style()
+        fig, ax = plt.subplots(figsize=(8, 5))
+        steps = np.arange(len(history_cos_sim))
+        ax.plot(steps, history_cos_sim, color=self.palette[4], linewidth=LINEWIDTH,
+                label="CosSim(v_pred, f_phys)")
+        ax.fill_between(steps, history_cos_sim, 0, color=self.palette[4], alpha=0.1)
+        ax.axhline(0, color="black", linestyle="--", linewidth=0.8, alpha=0.5)
+        ax.set_xlabel("Optimization Step")
+        ax.set_ylabel("Cosine Similarity")
+        ax.set_title("Neural Flow vs. Physical Force Alignment")
+        ax.set_ylim(-1.1, 1.1)
+        ax.legend()
         self._save(fig, filename)
 
     # ── Legacy / Extra ─────────────────────────────────────────────────────────

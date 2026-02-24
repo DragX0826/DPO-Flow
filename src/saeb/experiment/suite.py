@@ -128,6 +128,7 @@ class SAEBFlowExperiment:
         history_E    = []
         history_RMSD = []          # min over ensemble
         history_FM   = []
+        history_CosSim = []        # Flow alignment with Physics force
 
         prev_pos_L = prev_latent = None
 
@@ -171,11 +172,23 @@ class SAEBFlowExperiment:
                     confidence.view(B * N, 1), euler_pos, B, N
                 )
 
-            # Physics energy
+            # Physics energy + Explicit Force (for alignment check)
+            # We use autograd to get -grad(Energy) as the physical force vector
+            pos_L.requires_grad_(True)
             energy, _, alpha, _ = self.phys.compute_energy(
                 pos_L, pos_P, q_L_b, q_P, x_L, x_P, t
             )
             loss_phys = energy.mean() * 0.01
+            
+            # Compute physical force: F = -dE/dpos
+            f_phys = -torch.autograd.grad(energy.sum(), pos_L, retain_graph=True)[0]
+            
+            # ── Alignment Metric (no grad) ──────────────────────────────────
+            with torch.no_grad():
+                # v_pred: flow direction; f_phys: physics direction
+                # Normalize both to get cosine similarity
+                cos_sim = F.cosine_similarity(v_pred, f_phys, dim=-1).mean()
+                history_CosSim.append(cos_sim.item())
 
             (loss_fm + loss_phys).backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
@@ -200,6 +213,7 @@ class SAEBFlowExperiment:
                 logger.info(
                     f"  [{step+1:4d}/{total_steps}] "
                     f"E={history_E[-1]:8.1f}  FM={history_FM[-1]:.4f}  "
+                    f"CosSim={history_CosSim[-1]:.3f}  "
                     f"RMSD_min={r_min:.2f}A  RMSD_mean={r_mean:.2f}A  "
                     f"alpha={alpha:.2f}  lr={scheduler.get_last_lr()[0]:.2e}"
                 )
@@ -228,11 +242,15 @@ class SAEBFlowExperiment:
         self.visualizer.plot_rmsd_convergence(
             history_RMSD, filename=f"rmsd_{self.config.pdb_id}.pdf"
         )
+        self.visualizer.plot_alignment_trends(
+            history_CosSim, filename=f"align_{self.config.pdb_id}.pdf"
+        )
 
         return {
             "pdb_id":        self.config.pdb_id,
             "best_rmsd":     best_rmsd,
             "mean_rmsd":     final_rmsd.mean().item(),
             "final_energy":  history_E[-1],
+            "mean_cossim":   np.mean(history_CosSim) if history_CosSim else 0.0,
             "steps":         total_steps,
         }
