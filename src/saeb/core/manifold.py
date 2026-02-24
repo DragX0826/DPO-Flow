@@ -6,10 +6,10 @@ import logging
 
 logger = logging.getLogger("SAEB-Flow.core.manifold")
 
-def so3_averaged_target(pos_pred, pos_native, t):
+def conditional_flow_target(pos_pred, pos_native, t):
     """
-    SO(3)-Averaged Flow Matching target.
-    Decomposes the conditional docking task into a Haar-averaged velocity field.
+    Conditional Flow Matching target (Cartesian).
+    Computes the velocity vector pointing towards the native pose.
     """
     # (B, N, 3) - (B, N, 3) or (N, 3)
     if pos_native.dim() == 2:
