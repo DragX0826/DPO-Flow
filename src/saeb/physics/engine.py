@@ -121,12 +121,11 @@ class PhysicsEngine(nn.Module):
             ratio12 = ratio6.pow(2)
             e_vdw_raw = 4.0 * eps_ij * (ratio12 - ratio6)
             
-            # --- Bug 1 Fix: Smooth Clamping for Gradients ---
-            # Gradient path: use softplus to prevent dead zones while capping extremes
-            # Clipping floor at -10 with softplus mapping
-            e_vdw_grad = F.softplus(e_vdw_raw - (-10.0)) + (-10.0)
-            # Clipping ceiling at 500 with softplus mapping
-            e_vdw_grad = -F.softplus(-(e_vdw_grad - 500.0)) + 500.0
+            # --- Bug 6 Fix: Tanh-Compression for continuous gradients ---
+            # Center = 245, Half-Range = 255 -> Maps R to (-10, 500)
+            center = 245.0
+            half_range = 255.0
+            e_vdw_grad = center + half_range * torch.tanh((e_vdw_raw - center) / half_range)
             
             # --- Distance cutoff ---
             CUTOFF = 12.0
@@ -135,7 +134,7 @@ class PhysicsEngine(nn.Module):
             e_inter_grad = (e_elec + e_vdw_grad) * dist_mask
             e_soft = e_inter_grad.sum(dim=(1, 2))
 
-            # --- Hydrophobic Solvation Approximation (Moved inside autocast) ---
+            # --- Hydrophobic Solvation Approximation ---
             e_hsa = torch.zeros(B, device=pos_L.device)
             if hasattr(self.params, 'no_hsa') and not self.params.no_hsa:
                 is_C_L = type_probs_L[..., 0]     # carbon probability
@@ -155,7 +154,7 @@ class PhysicsEngine(nn.Module):
             else:
                 e_ghost = torch.zeros(B, device=pos_L.device)
 
-            # --- Final Combining (Differentiable) ---
+            # --- Final Combining (Differentiable Energy Path) ---
             e_raw = e_soft + 5.0 * e_hsa + e_pauli + e_ghost
             
             # --- NaN safety ---
@@ -163,16 +162,17 @@ class PhysicsEngine(nn.Module):
                 logger.warning("NaN in raw energy")
                 e_raw = torch.nan_to_num(e_raw, nan=0.0)
 
-        # Log energy is clamped for metrics reporting stability
-        # Use a harder clamp for the log to stay in -500..5000 range
-        log_vdw = torch.clamp(e_vdw_raw, min=-10.0, max=500.0)
-        log_soft = ((e_elec + log_vdw) * dist_mask).sum(dim=(1, 2)) + 5.0 * e_hsa
-        
-        e_soft_final = torch.clamp(log_soft, min=-500.0, max=5000.0)
-        e_hard_final = torch.clamp(e_pauli + e_ghost, max=10000.0)
-        log_energy   = torch.clamp(e_soft_final + e_hard_final, max=1e6)
-        
-        return e_raw, e_hard_final, self.current_alpha, log_energy
+            # --- Bug 5 Fix: Graph Context Isolation (Log Road) ---
+            # Compute log elements INSIDE with context and detach them
+            log_vdw = torch.clamp(e_vdw_raw.detach(), min=-10.0, max=500.0)
+            log_soft_core = ((e_elec.detach() + log_vdw) * dist_mask.detach()).sum(dim=(1, 2))
+            log_soft_final = log_soft_core + 5.0 * e_hsa.detach()
+            
+            e_soft_log = torch.clamp(log_soft_final, min=-500.0, max=5000.0)
+            e_hard_log = torch.clamp((e_pauli + e_ghost).detach(), max=10000.0)
+            log_energy_val = torch.clamp(e_soft_log + e_hard_log, max=1e6)
+
+        return e_raw, e_hard_log, self.current_alpha, log_energy_val
 
     def calculate_valency_loss(self, pos_L, x_L):
         """Valency constraint loss."""

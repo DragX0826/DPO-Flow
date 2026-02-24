@@ -192,8 +192,10 @@ class SAEBFlowExperiment:
             raw_energy, e_hard, alpha, energy_clamped = self.phys.compute_energy(
                 pos_L, pos_P, q_L_b, q_P, x_L, x_P, t
             )
-            # Use raw_energy for both loss and autograd to preserve gradients
-            loss_phys = raw_energy.mean() * 0.01
+            # Issue 8 Fix: Gradient Isolation
+            # Detach raw_energy for loss_phys to prevent it from contributing to pos_L.grad.
+            # We want f_phys to be the EXPLICIT and ONLY physical guide in the PAT step.
+            loss_phys = raw_energy.mean().detach() * 0.01
 
             # Pocket Guidance (decays to 0 at t=0.5)
             lig_centroid = pos_L.mean(dim=1)

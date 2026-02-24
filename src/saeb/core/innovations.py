@@ -99,7 +99,10 @@ def langevin_noise(pos_shape, temperature, dt, device, x_L=None):
         # Atomic masses: C=12, N=14, O=16, S=32, F=19, P=31, Cl=35, Br=80, I=127
         mass_coeffs = torch.tensor([12.0, 14.0, 16.0, 32.0, 19.0, 31.0, 35.0, 80.0, 127.0], device=device)
         mass = (types * mass_coeffs).sum(dim=-1, keepdim=True)
-        mass = torch.where(mass > 0, mass, torch.ones_like(mass)) # safety
+        # Issue 7 Fix: Mass Protection
+        # Soft probabilities might lead to mass < 12.0 (Carbon); 
+        # clamp to Carbon-scale to prevent noise from exploding on light/uncertain atoms.
+        mass = torch.clamp(mass, min=12.0) 
     
     # Fluctuating-Dissipation Theorem: scale = sqrt(2 * T * dt / mass)
     scale = torch.sqrt(torch.tensor(2.0 * temperature * dt, device=device) / mass)
