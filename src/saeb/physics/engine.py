@@ -121,11 +121,11 @@ class PhysicsEngine(nn.Module):
             ratio12 = ratio6.pow(2)
             e_vdw_raw = 4.0 * eps_ij * (ratio12 - ratio6)
             
-            # --- Bug 6 Fix: Tanh-Compression for continuous gradients ---
-            # Center = 245, Half-Range = 255 -> Maps R to (-10, 500)
-            center = 245.0
-            half_range = 255.0
-            e_vdw_grad = center + half_range * torch.tanh((e_vdw_raw - center) / half_range)
+            # --- Bug 10 Fix: Asymmetric Tanh-Compression for physical gradients ---
+            # Separate mapping for attractive and repulsive regions to preserve linear gradients
+            e_pos = 500.0 * torch.tanh(F.relu(e_vdw_raw) / 500.0)       # Capped at +500
+            e_neg = -10.0 * torch.tanh(F.relu(-e_vdw_raw) / 10.0)      # Capped at -10
+            e_vdw_grad = e_pos + e_neg
             
             # --- Distance cutoff ---
             CUTOFF = 12.0

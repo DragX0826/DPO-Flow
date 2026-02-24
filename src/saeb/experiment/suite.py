@@ -140,11 +140,15 @@ class SAEBFlowExperiment:
         with torch.no_grad():
             dist_to_pocket = torch.cdist(pos_P.unsqueeze(0), p_center.unsqueeze(0).unsqueeze(0))[0, :, 0]
             pocket_mask = (dist_to_pocket < 6.0)  # (M,) bool
-            # Pocket centroid as weighted mean of nearby protein atoms
-            if pocket_mask.sum() > 0:
-                pocket_anchor = pos_P[pocket_mask].mean(dim=0)  # (3,)
+            
+            # Robust Anchor (Bug fix): Ensure at least 20 atoms are used
+            if pocket_mask.sum() < 20:
+                # Fallback to Top-K closest atoms if 6A radius is too sparse
+                k = min(20, len(dist_to_pocket))
+                topk_idx = torch.topk(dist_to_pocket, k=k, largest=False).indices
+                pocket_anchor = pos_P[topk_idx].mean(dim=0)
             else:
-                pocket_anchor = p_center
+                pocket_anchor = pos_P[pocket_mask].mean(dim=0)
 
         prev_pos_L = prev_latent = None
 
@@ -205,7 +209,7 @@ class SAEBFlowExperiment:
 
             # Compute physical force BEFORE backward to reuse graph
             f_phys = -torch.autograd.grad(
-                raw_energy.sum(), pos_L, retain_graph=True, create_graph=False
+                raw_energy.sum(), pos_L, retain_graph=False, create_graph=False
             )[0].detach()  # detach so it doesn't interfere with backward
 
             # ── Backward & Optimizer Step (uses graph before position update) 
