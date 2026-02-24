@@ -12,7 +12,7 @@ from ..physics.config import ForceFieldParameters
 from ..reporting.visualizer import PublicationVisualizer
 from ..utils.pdb_io import RealPDBFeaturizer, save_points_as_pdb
 from ..core.model import SAEBFlowBackbone, RectifiedFlow
-from ..core.innovations import ShortcutFlowLoss, pat_step, langevin_noise
+from ..core.innovations import ShortcutFlowLoss, pat_step, langevin_noise, Muon
 from .config import SimulationConfig
 
 logger = logging.getLogger("SAEB-Flow.experiment.suite")
@@ -107,21 +107,42 @@ class SAEBFlowExperiment:
 
         cbsf_loss_fn = ShortcutFlowLoss(lambda_x1=1.0, lambda_conf=0.01).to(device)
 
-        # Optimiser: positions + model
-        opt = torch.optim.AdamW(
-            [pos_L, x_L] + list(model.parameters()),
-            lr=self.config.lr, weight_decay=1e-4
-        )
+        is_train = (self.config.mode == "train")
+
+        # ── Optimiser Setup (Imp 1 & 6) ──────────────────────────────────────
+        # Separation of parameters for Muon (linear weights) and AdamW (others)
+        muon_params = []
+        adamw_params = []
+        
+        # Backbone params
+        for name, p in model.named_parameters():
+            if p.ndim == 2 and "weight" in name:
+                muon_params.append(p)
+            else:
+                adamw_params.append(p)
+        
+        # Position & Feature params
+        adamw_params.append(x_L)
+        if is_train:
+            # Bug Fix 1.8: Only optimize pos_L via AdamW in training mode.
+            # In inference, pos_L is driven exclusively by PAT/Physics (Imp 1).
+            adamw_params.append(pos_L)
+            
+        opt_adamw = torch.optim.AdamW(adamw_params, lr=self.config.lr, weight_decay=1e-4)
+        opt_muon  = Muon(muon_params, lr=self.config.lr * 0.02) # Adjusted for stability
+        
         # Warm-up (fixed 5% of total steps) then cosine decay
         total_steps = self.config.steps
-        # Improvement 1: Scalable warmup
         warmup_steps = max(10, total_steps // 20) 
+        
         def lr_lambda(step):
             if step < warmup_steps:
                 return step / max(warmup_steps, 1)
             prog = (step - warmup_steps) / max(total_steps - warmup_steps, 1)
             return 0.5 * (1 + math.cos(math.pi * prog))
-        scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda)
+            
+        sched_adamw = torch.optim.lr_scheduler.LambdaLR(opt_adamw, lr_lambda)
+        sched_muon  = torch.optim.lr_scheduler.LambdaLR(opt_muon, lr_lambda)
 
         # Pre-expand protein tensors (shared across batch)
         pos_P_b = pos_P.unsqueeze(0).expand(B, -1, -1)
@@ -196,7 +217,8 @@ class SAEBFlowExperiment:
             t   = (step + 1) / max(total_steps, 1)
             t_t = torch.full((B,), t, device=device)
 
-            opt.zero_grad()
+            opt_adamw.zero_grad()
+            opt_muon.zero_grad()
 
             # ── Forward ─────────────────────────────────────────────────────
             out = model(
@@ -240,28 +262,42 @@ class SAEBFlowExperiment:
             # We want f_phys to be the EXPLICIT and ONLY physical guide in the PAT step.
             loss_phys = raw_energy.mean().detach() * 0.01
 
-            # Pocket Guidance (Bug E: Exponential decay instead of hard cutoff)
-            lig_centroid = pos_L.mean(dim=1)
-            pocket_dist  = (lig_centroid - pocket_anchor.unsqueeze(0)).pow(2).sum(-1)
-            guidance_weight = 0.1 * math.exp(-3.0 * t) 
+            # Pocket Guidance (Imp 3: Dynamic two-stage guidance)
+            lig_centroid = pos_L.mean(dim=1, keepdim=True) # (B, 1, 3)
+            # Balanced pull weight: enough to pull in, not enough to crush
+            if t < 0.3:
+                guidance_weight = 0.5 * math.exp(-1.0 * t) 
+            else:
+                guidance_weight = 0.1 * math.exp(-3.0 * t) 
+                
+            # Bug Fix 1.8: Apply guidance as a direct force in inference mode (Imp 1)
+            # Use a more conservative multiplier (20.0 instead of 50.0)
+            f_pocket = (pocket_anchor.unsqueeze(0) - lig_centroid) * (guidance_weight * 20.0)
+            
+            # Loss for training/logging
+            pocket_dist = (lig_centroid.squeeze(1) - pocket_anchor.unsqueeze(0)).pow(2).sum(-1)
             loss_pocket = guidance_weight * pocket_dist.mean()
 
-            # Compute physical force BEFORE backward to reuse graph
+            # Compute physical force
             f_phys = -torch.autograd.grad(
                 raw_energy.sum(), pos_L, retain_graph=False, create_graph=False
-            )[0].detach()  # detach so it doesn't interfere with backward
+            )[0].detach()
+            
+            # Add pocket guidance force in inference mode
+            if not is_train:
+                f_phys = f_phys + f_pocket.expand_as(f_phys)
 
             # ── Backward & Optimizer Step
-            # Bug Fix 17: In inference, only optimize pos_L via physical forces & guidance.
-            # DO NOT backward loss_fm as it leads to zero-velocity trivial solutions in self-consistency.
-            if is_train:
-                (loss_fm + loss_phys + loss_pocket).backward()
-            else:
-                (loss_phys + loss_pocket).backward()
+            # Bug Fix 1.8: Always backward loss_fm. 
+            # In inference, it's the "self-consistency" term that warms up the backbone.
+            # loss_phys and loss_pocket are also included for multi-objective alignment.
+            (loss_fm + loss_phys + loss_pocket).backward()
             
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-            opt.step()
-            scheduler.step()
+            opt_adamw.step()
+            opt_muon.step()
+            sched_adamw.step()
+            sched_muon.step()
 
             # ── Metrics ───────────────────────────────────────────────────
             history_E.append(energy_clamped.mean().item())
@@ -303,6 +339,11 @@ class SAEBFlowExperiment:
                 alpha_ema = beta_ema * alpha_ema + (1.0 - beta_ema) * alpha_tilt
                 alpha_ema_corr = alpha_ema / (1.0 - beta_ema**(step + 1))
                 
+                # Imp 2: Inference Trust compensation
+                if not is_train:
+                    # Model is untrained for this target; trust physics more (min 70%)
+                    alpha_ema_corr = torch.clamp(alpha_ema_corr, min=0.7)
+                
                 history_CosSim.append(c_i.mean().item())
 
             # ── PAT + Langevin Combined Position Update ────────────────────
@@ -317,6 +358,22 @@ class SAEBFlowExperiment:
             with torch.no_grad():
                 self.phys.update_alpha(f_phys.norm(dim=-1).mean().item())
 
+            # ── Replica Exchange (Imp 4) ───────────────────────────────────
+            # Prune high-energy clones and seed from low-energy ones to escape local minima
+            if step > warmup_steps and step % 50 == 0:
+                with torch.no_grad():
+                    energies = energy_clamped  # (B,)
+                    top_k = max(1, B // 4)
+                    good_idx = energies.argsort()[:top_k]
+                    bad_idx  = energies.argsort()[-(B // 4):]  # Worst 25%
+                    
+                    # Log population shift
+                    logger.debug(f"  [Replica] Purging high-E clones (Median E={energies[bad_idx].median():.1f})")
+                    for i, b_idx in enumerate(bad_idx):
+                        s_idx = good_idx[i % top_k]
+                        # Transfer position with perturbation
+                        pos_L.data[b_idx] = pos_L.data[s_idx] + torch.randn_like(pos_L.data[s_idx]) * 0.5
+
             # ── Log ────────────────────────────────────────────────────────
             if step % log_every == 0 or step == total_steps - 1:
                 # Calculate average force norm for logging
@@ -327,7 +384,7 @@ class SAEBFlowExperiment:
                     f"CosSim={history_CosSim[-1]:.3f}  α={alpha:.2f}  "
                     f"T={T_curr:.3f}  "
                     f"RMSD_min={history_RMSD[-1]:.2f}A  "
-                    f"lr={scheduler.get_last_lr()[0]:.2e}"
+                    f"lr={sched_adamw.get_last_lr()[0]:.2e}"
                 )
 
         # ── Final Selection & Refinement (Imp 1 & 3) ──────────────────────────
@@ -339,17 +396,27 @@ class SAEBFlowExperiment:
             best_idx   = final_rmsd.argmin()
             pos_L_final = pos_L[best_idx].detach().clone().unsqueeze(0)
 
-        # Improvement 3: L-BFGS Geometry Refinement
+        # Improvement 3 & 5: Physics-Aware L-BFGS Refinement
         if not is_train:
-            logger.info("  [Refine] Polishing structure with L-BFGS...")
+            logger.info("  [Refine] Polishing structure with Physics-Aware L-BFGS...")
             pos_ref = torch.nn.Parameter(pos_L_final.clone())
             optimizer_bfgs = torch.optim.LBFGS([pos_ref], lr=0.1, max_iter=20)
             
             def closure():
                 optimizer_bfgs.zero_grad()
-                g_loss = self.phys.calculate_internal_geometry_score(pos_ref).mean()
-                g_loss.backward()
-                return g_loss
+                geom_loss = self.phys.calculate_internal_geometry_score(pos_ref).mean()
+                
+                # Include protein-ligand interaction in refinement
+                # Ensure we don't fix the internal geometry by pushing atoms into the protein
+                e_ref, _, _, _ = self.phys.compute_energy(
+                    pos_ref, pos_P_b[:1], q_L_b[:1], q_P_b[:1], 
+                    x_L[:1], x_P_b[:1], 1.0
+                )
+                phys_loss = torch.clamp(e_ref.mean(), max=500.0) * 0.01
+                
+                total_loss = geom_loss + phys_loss
+                total_loss.backward()
+                return total_loss
             
             try:
                 optimizer_bfgs.step(closure)

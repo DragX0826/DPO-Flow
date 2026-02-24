@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 from typing import Dict, Optional
 import numpy as np
 
@@ -164,3 +165,60 @@ def integrate_innovations(config, backbone, device):
         'phpd_scheduler': None # Placeholder
     }
     return innovations
+
+
+class Muon(torch.optim.Optimizer):
+    """
+    Muon: MomentUm Orthogonalized by Newton-Schulz.
+    SOTA optimizer for matrix-structured parameters (linear weights).
+    References: Jordan Sitkin, Keller Jordan et al. (2024).
+    """
+    def __init__(self, params, lr=1e-3, momentum=0.9, ns_steps=5):
+        defaults = dict(lr=lr, momentum=momentum, ns_steps=ns_steps)
+        super().__init__(params, defaults)
+
+    @torch.no_grad()
+    def step(self):
+        for group in self.param_groups:
+            lr = group['lr']
+            momentum = group['momentum']
+            ns_steps = group['ns_steps']
+
+            for p in group['params']:
+                if p.grad is None:
+                    continue
+                
+                g = p.grad
+                state = self.state[p]
+
+                if len(state) == 0:
+                    state['momentum'] = torch.zeros_like(p.data)
+
+                # 1. Update SGD-style momentum
+                m = state['momentum']
+                m.mul_(momentum).add_(g)
+
+                # 2. Newton-Schulz Orthogonalization (for 2D matrices)
+                if p.data.ndim == 2:
+                    X = m.clone()
+                    # Scale to avoid explosion
+                    if X.size(0) > X.size(1):
+                        X = X.T
+                    
+                    # Normalize spectral norm for stability
+                    X = X / (X.norm() + 1e-7)
+                    
+                    # Newton-Schulz iterations
+                    for _ in range(ns_steps):
+                        X = 1.5 * X - 0.5 * X @ (X.T @ X)
+                    
+                    # Apply update
+                    if p.data.size(0) <= p.data.size(1):
+                        update = X.view_as(p.data)
+                    else:
+                        update = X.T.view_as(p.data)
+                        
+                    p.data.add_(update, alpha=-lr)
+                else:
+                    # Fallback to standard SGD-momentum for 1D tensors
+                    p.data.add_(m, alpha=-lr)
