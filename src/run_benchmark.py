@@ -93,6 +93,16 @@ def run_single_target(pdb_id, device_id, seed, args):
                 "traceback": tb, "time_sec": round(time.time() - t0, 1), "seed": seed}
 
 
+def worker(q_in, q_out, gpu_id, args_copy):
+    """Pickleable worker for torch.multiprocessing spawn."""
+    while True:
+        task = q_in.get()
+        if task is None: break
+        pdb_id, seed = task
+        res = run_single_target(pdb_id, gpu_id, seed, args_copy)
+        q_out.put(res)
+
+
 def main():
     parser = argparse.ArgumentParser(description="SAEB-Flow Benchmark — Astex Diverse 85 / DiffDock-362")
     # Target selection
@@ -115,6 +125,11 @@ def main():
                         help="Kaggle mode: sequential execution (no multiprocessing)")
     # Output
     parser.add_argument("--output_dir", type=str, default="results", help="Output directory")
+    # Comparison
+    parser.add_argument("--compare", type=str, default=None, 
+                        help="Comma-separated list of CSVs to compare (e.g. 'results1.csv,results2.csv')")
+    parser.add_argument("--compare_labels", type=str, default=None,
+                        help="Comma-separated labels for comparison (e.g. 'Full,No-Physics')")
     args = parser.parse_args()
 
     if args.high_fidelity:
@@ -168,14 +183,6 @@ def main():
             mp.set_start_method('spawn', force=True)
         except RuntimeError: pass
 
-        def worker(q_in, q_out, gpu_id, args_copy):
-            while True:
-                task = q_in.get()
-                if task is None: break
-                pdb_id, seed = task
-                res = run_single_target(pdb_id, gpu_id, seed, args_copy)
-                q_out.put(res)
-
         q_in = mp.Queue()
         q_out = mp.Queue()
         for t in tasks: q_in.put(t)
@@ -191,7 +198,7 @@ def main():
             res = q_out.get()
             results_summary.append(res)
             pdb_id = res["pdb_id"]
-            seed = res["results"].get("seed", "unknown") if "results" in res else "err"
+            seed = res.get("seed", "unknown")
             if res["status"] == "Success":
                 r = res["results"]
                 logger.info(f" [DONE] {pdb_id} (Seed {seed}): best_rmsd={r['best_rmsd']:.2f}A "
@@ -239,6 +246,36 @@ def main():
             logger.info(" Aggregate figures generated.")
         except Exception as e:
             logger.warning(f"Figure generation failed: {e}")
+
+
+    # Comparison implementation
+    if args.compare:
+        import pandas as pd
+        csvs = args.compare.split(",")
+        labels = args.compare_labels.split(",") if args.compare_labels else [os.path.basename(c) for c in csvs]
+        
+        comparison_rmsd = {}
+        ablation_data = {}
+        
+        for c, label in zip(csvs, labels):
+            df = pd.read_csv(c)
+            rmsds = df["best_rmsd"].values
+            comparison_rmsd[label] = rmsds
+            ablation_data[label] = {
+                "sr2": (rmsds < 2.0).mean() * 100,
+                "median_rmsd": np.median(rmsds)
+            }
+            
+        try:
+            from saeb.reporting.visualizer import PublicationVisualizer
+            viz = PublicationVisualizer(output_dir=args.output_dir)
+            viz.plot_success_rate_curve(comparison_rmsd, filename="fig_comparison_sr.pdf")
+            viz.plot_rmsd_cdf(comparison_rmsd, filename="fig_comparison_cdf.pdf")
+            viz.plot_ablation(ablation_data, filename="fig_ablation_study.pdf")
+            logger.info(f" Comparison figures generated in {args.output_dir}")
+        except Exception as e:
+            logger.warning(f"Comparison figure generation failed: {e}")
+        return
 
 
 if __name__ == "__main__":
