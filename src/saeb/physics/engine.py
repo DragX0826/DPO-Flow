@@ -157,13 +157,17 @@ class PhysicsEngine(nn.Module):
             mask_cc = is_C_L.unsqueeze(2) * is_C_P.unsqueeze(1)
             hsa_term = 1.0 / (1.0 + (dist / 4.0).pow(4))
             e_hsa = (-0.5 * mask_cc * hsa_term * dist_mask).sum(dim=(1, 2))
-            
+
+        # --- Final Clamping and Combining ---
+        e_raw = e_soft + 5.0 * e_hsa + e_pauli + e_ghost
+        
+        # Log energy is clamped for metrics reporting stability
         e_soft_final = torch.clamp(e_soft + 5.0 * e_hsa, min=-500.0, max=5000.0)
         e_hard_final = torch.clamp(e_pauli + e_ghost, max=10000.0)
+        log_energy   = torch.clamp(e_soft_final + e_hard_final, max=1e6)
         
-        total_energy = torch.clamp(e_soft_final + e_hard_final, max=1e6)
-        
-        return total_energy, e_hard_final, self.current_alpha, e_soft_final
+        # We return e_raw as the PRIMARY energy for gradient calculation
+        return e_raw, e_hard_final, self.current_alpha, log_energy
 
     def calculate_valency_loss(self, pos_L, x_L):
         """Valency constraint loss."""

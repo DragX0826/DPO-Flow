@@ -188,12 +188,12 @@ class SAEBFlowExperiment:
                     confidence.view(B * N, 1), euler_pos, B, N
                 )
 
-            # ── Physics Energy + Force ─────────────────────────────────────
             # pos_L.requires_grad_(True) is already set (it's an nn.Parameter)
-            energy, e_hard, alpha, _ = self.phys.compute_energy(
+            raw_energy, e_hard, alpha, energy_clamped = self.phys.compute_energy(
                 pos_L, pos_P, q_L_b, q_P, x_L, x_P, t
             )
-            loss_phys = energy.mean() * 0.01
+            # Use raw_energy for both loss and autograd to preserve gradients
+            loss_phys = raw_energy.mean() * 0.01
 
             # Pocket Guidance (decays to 0 at t=0.5)
             lig_centroid = pos_L.mean(dim=1)
@@ -203,7 +203,7 @@ class SAEBFlowExperiment:
 
             # Compute physical force BEFORE backward to reuse graph
             f_phys = -torch.autograd.grad(
-                energy.sum(), pos_L, retain_graph=True, create_graph=False
+                raw_energy.sum(), pos_L, retain_graph=True, create_graph=False
             )[0].detach()  # detach so it doesn't interfere with backward
 
             # ── Backward & Optimizer Step (uses graph before position update) 
@@ -213,7 +213,7 @@ class SAEBFlowExperiment:
             scheduler.step()
 
             # ── Metrics (before position overwrite) ────────────────────────
-            history_E.append(energy.mean().item())
+            history_E.append(energy_clamped.mean().item())
             history_FM.append(loss_fm.item())
 
             log_every = max(total_steps // 10, 1)
@@ -234,14 +234,20 @@ class SAEBFlowExperiment:
             # Atom-wise CosSim → Tempered Sigmoid → EMA smoothing
             with torch.no_grad():
                 c_i = F.cosine_similarity(v_pred.detach(), f_phys, dim=-1).unsqueeze(-1)
-                history_CosSim.append(c_i.mean().item())
                 alpha_tilt = torch.sigmoid(c_i / tau)
+                
+                # Confidence-weighted trust: lower confidence => more physics trust
+                # We blend alpha_tilt with (1 - confidence)
+                # This ensures that when the neural model is unsure, physics takes over.
+                alpha_tilt = 0.5 * alpha_tilt + 0.5 * (1.0 - confidence.detach())
+                
                 alpha_ema = beta_ema * alpha_ema + (1.0 - beta_ema) * alpha_tilt
+                history_CosSim.append(c_i.mean().item())
 
             # ── PAT + Langevin Combined Position Update ────────────────────
             with torch.no_grad():
                 noise   = langevin_noise(pos_L.shape, T_curr, dt, device)
-                pos_new = pat_step(pos_L, v_pred.detach(), f_phys, alpha_ema, confidence, dt)
+                pos_new = pat_step(pos_L, v_pred.detach(), f_phys, alpha_ema, confidence.detach(), dt)
                 pos_L.data.copy_(pos_new + noise)
 
             # ── Alpha Hardening (called once per step) ─────────────────────
