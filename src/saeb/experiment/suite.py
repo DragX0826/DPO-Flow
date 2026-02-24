@@ -217,15 +217,8 @@ class SAEBFlowExperiment:
                 force_mag = f_phys.norm(dim=-1).mean().item()
                 self.phys.update_alpha(force_mag)
 
-            (loss_fm + loss_phys + loss_pocket).backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-            opt.step()
-            scheduler.step()
-
             # ── Langevin Temperature Annealing ──────────────────────────────
-            # Final 20% of steps fade noise to 0 to ensure convergence
             if step < 0.8 * total_steps:
-                # Cosine annealing from T_start to 0
                 prog_noise = step / (0.8 * total_steps)
                 T_curr = 0.5 * self.config.temp_start * (1 + math.cos(math.pi * prog_noise))
             else:
@@ -233,25 +226,15 @@ class SAEBFlowExperiment:
 
             # ── PAT: Physics-Adaptive Trust (Magma Inspired) ────────────────
             with torch.no_grad():
-                # Atom-wise CosSim
-                c_i = F.cosine_similarity(v_pred, f_phys, dim=-1).unsqueeze(-1) # (B, N, 1)
+                c_i = F.cosine_similarity(v_pred, f_phys, dim=-1).unsqueeze(-1)
                 history_CosSim.append(c_i.mean().item())
-                
-                # Tempered Sigmoid mapping to alpha_tilt
                 alpha_tilt = torch.sigmoid(c_i / tau)
-                
-                # EMA update
                 alpha_ema = beta_ema * alpha_ema + (1.0 - beta_ema) * alpha_tilt
 
             # ── Combined Update Step ────────────────────────────────────────
             with torch.no_grad():
-                # 1. Langevin Stochastic Step
                 noise = langevin_noise(pos_L.shape, T_curr, dt, device)
-                
-                # 2. PAT Update
                 pos_new = pat_step(pos_L, v_pred, f_phys, alpha_ema, confidence, dt)
-                
-                # Apply
                 pos_L.data.copy_(pos_new + noise)
 
             # ── Alpha Hardening (Curriculum) ────────────────────────────────
@@ -263,6 +246,24 @@ class SAEBFlowExperiment:
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
             opt.step()
             scheduler.step()
+
+            # ── Metrics ─────────────────────────────────────────────────────
+            history_E.append(energy.mean().item())
+            history_FM.append(loss_fm.item())
+
+            log_every = max(total_steps // 10, 1)
+            if step % log_every == 0 or step == total_steps - 1:
+                with torch.no_grad():
+                    rmsd = kabsch_rmsd(pos_L.detach(), pos_native)
+                    r_min, r_mean = rmsd.min().item(), rmsd.mean().item()
+                history_RMSD.append(r_min)
+                logger.info(
+                    f"  [{step+1:4d}/{total_steps}] "
+                    f"E={history_E[-1]:8.1f}  FM={history_FM[-1]:.4f}  "
+                    f"CosSim={history_CosSim[-1]:.3f}  α={alpha:.2f}  "
+                    f"RMSD_min={r_min:.2f}A  RMSD_mean={r_mean:.2f}A  "
+                    f"lr={scheduler.get_last_lr()[0]:.2e}"
+                )
 
         # ── Final evaluation ─────────────────────────────────────────────────
         with torch.no_grad():
