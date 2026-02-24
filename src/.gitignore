@@ -1,0 +1,60 @@
+# SAEB-Flow / MaxFlow — .gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Data — never commit raw PDB / large binary files
+*.pdb
+*.sdf
+*.mol2
+*.mmcif
+*.cif
+data/
+cache/
+esm_embeddings.pt
+cache/esm/
+
+# Experiment outputs — generated, not source-controlled
+results/
+plots/
+outputs/
+*.log
+*.tex
+*.pdf
+saebflow_final_report.tex
+
+# Zip archives
+*.zip
+SAEB-Flow_Golden_Calculus.zip
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Other
+*.tmp
+smoke_*.log
