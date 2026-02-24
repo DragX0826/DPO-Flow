@@ -250,6 +250,25 @@ class SAEBFlowExperiment:
                     v_pred.view(B * N, 3), x1_pred.view(B * N, 3),
                     confidence.view(B * N, 1), euler_pos, B, N
                 )
+                
+                # Imp 1: Pocket-Aware Centroid Loss (Couples backbone to geometry)
+                # Forces predicted final pose (x1_pred) to center on the pocket anchor
+                x1_centroid = x1_pred.mean(dim=1) # (B, 3)
+                loss_pocket_aware = F.huber_loss(
+                    x1_centroid,
+                    pocket_anchor.unsqueeze(0).expand(B, -1),
+                    delta=3.0 # 3.0A tolerance before quadratic penalty
+                )
+                
+                # Imp 2.1: Dream-Energy Loss (The "Backbone Energy" Feedback Loop)
+                # Optimizes the model to predict poses that have low physical energy
+                # This breaks the "unfiltered dreaming" of the neural field
+                e_dream, _, _, _ = self.phys.compute_energy(
+                    x1_pred, pos_P_b, q_L_b, q_P_b, x_L, x_P_b, t
+                )
+                loss_dream = e_dream.mean() * 0.001 
+                
+                loss_fm = loss_fm + 0.1 * loss_pocket_aware + loss_dream
 
             # pos_L.requires_grad_(True) is already set (it's an nn.Parameter)
             raw_energy, e_hard, alpha, energy_clamped = self.phys.compute_energy(
@@ -327,7 +346,11 @@ class SAEBFlowExperiment:
                 f_phys_scaled_for_trust = f_phys / (f_norm + 1e-8) * v_norm_clamped
                 
                 c_i = F.cosine_similarity(v_pred.detach(), f_phys_scaled_for_trust, dim=-1).unsqueeze(-1)
-                alpha_tilt = torch.sigmoid(c_i / tau)
+                
+                # Bug Fix v3.0: Magma Sentiment Flip
+                # If CosSim is negative (disagreement), we must trust PHYSICS more (high alpha).
+                # Previous logic had alpha_tilt = sigmoid(c_i), which trusted the hallucinatory model.
+                alpha_tilt = torch.sigmoid(-c_i / tau)
                 
                 # Confidence-weighted trust: lower confidence => more physics trust
                 alpha_tilt = 0.5 * alpha_tilt + 0.5 * (1.0 - confidence.detach())
@@ -350,8 +373,12 @@ class SAEBFlowExperiment:
                 noise = langevin_noise(pos_L.shape, T_curr, dt, device, mass_precomputed=mass_precomputed) * noise_gate
                 
                 # Imp 2: Shortcut Pull (Accelerate convergence using x1_pred)
-                # Use model guess weighted by confidence
-                shortcut_pull = (x1_pred.detach() - pos_L) * confidence.detach() * 0.05
+                # Normalized pull vector with a 0.2A/step cap (increased for v2.1)
+                # Fix Bug 24: Explicitly detach pos_L during pull calculation
+                raw_pull = x1_pred.detach() - pos_L.detach()
+                pull_norm = raw_pull.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+                shortcut_pull = (raw_pull / pull_norm) * torch.clamp(pull_norm * 0.1, max=0.2)
+                shortcut_pull = shortcut_pull * confidence.detach()
                 
                 pos_new = pat_step(pos_L, v_pred.detach(), f_phys, alpha_ema_corr, confidence.detach(), dt)
                 pos_L.data.copy_(pos_new + noise + shortcut_pull)
@@ -364,8 +391,41 @@ class SAEBFlowExperiment:
             with torch.no_grad():
                 self.phys.update_alpha(f_phys.norm(dim=-1).mean().item())
 
-            # ── Replica Exchange (Imp 4) ───────────────────────────────────
-            # Prune high-energy clones and seed from low-energy ones to escape local minima
+            # ── Sampler Sequence (Imp 3: Reordered for escape-then-seed logic) ────
+
+            # 1. Rigid-Body Rotational Sampler (Break orientational minima first)
+            if step > warmup_steps and step % 20 == 0:
+                with torch.no_grad():
+                    # Rotate the bottom 50% energy clones
+                    rotate_idx = energy_clamped.argsort()[B // 2:]
+                    e_before = energy_clamped[rotate_idx].mean().item()
+                    
+                    # Dynamic Angle (Imp 3): Conservative early, aggressive late
+                    max_angle = math.pi * min(1.0, step / (total_steps * 0.5))
+                    
+                    for idx in rotate_idx:
+                        com = pos_L.data[idx].mean(dim=0, keepdim=True) # (1, 3)
+                        centered = pos_L.data[idx] - com # (N, 3)
+                        
+                        axis = F.normalize(torch.randn(3, device=device), dim=0)
+                        angle = torch.rand(1, device=device).item() * max_angle
+                        
+                        K = torch.tensor([
+                            [0, -axis[2], axis[1]],
+                            [axis[2], 0, -axis[0]],
+                            [-axis[1], axis[0], 0]
+                        ], device=device)
+                        R = (torch.eye(3, device=device) + 
+                             math.sin(angle) * K + 
+                             (1 - math.cos(angle)) * (K @ K))
+                        
+                        # Apply rotation + translation jitter (Imp 1 v2.1: 0.5A)
+                        jitter = torch.randn(1, 3, device=device) * 0.5
+                        pos_L.data[idx] = (centered @ R.T) + com + jitter
+                    
+                    logger.info(f"  [RotSampler] Re-sampled {len(rotate_idx)} clones (MaxAngle={max_angle/math.pi:.2f}π, E_prev={e_before:.1f})")
+
+            # 2. Replica Exchange (Population-based seeding after rotation escape)
             if step > warmup_steps and step % 50 == 0:
                 with torch.no_grad():
                     energies = energy_clamped  # (B,)
@@ -373,48 +433,16 @@ class SAEBFlowExperiment:
                     good_idx = energies.argsort()[:top_k]
                     bad_idx  = energies.argsort()[-(B // 4):]  # Worst 25%
                     
-                    # Log population shift
-                    logger.debug(f"  [Replica] Purging high-E clones (Median E={energies[bad_idx].median():.1f})")
+                    logger.debug(f"  [Replica] Purging and seeding from top performers")
                     for i, b_idx in enumerate(bad_idx):
                         s_idx = good_idx[i % top_k]
-                        # Transfer position with perturbation
-                        pos_L.data[b_idx] = pos_L.data[s_idx] + torch.randn_like(pos_L.data[s_idx]) * 0.5
+                        # Imp 4: Energy-Adaptive Jitter
+                        e_diff = (energies[b_idx] - energies[s_idx]).clamp(min=0).item()
+                        perturbation_scale = 0.2 + 0.5 * torch.tanh(torch.tensor(e_diff / 500.0)).item()
+                        pos_L.data[b_idx] = pos_L.data[s_idx] + torch.randn_like(pos_L.data[s_idx]) * perturbation_scale
 
-            # ── Rigid-Body Rotational Sampler (Imp 1: v1.9 Breakout) ────────
-            # To break the 3.5A ceiling: random rigid rotation for high-E clones
-            # Increased frequency (every 20 steps) for aggressive breakout
-            if step > warmup_steps and step % 20 == 0:
-                with torch.no_grad():
-                    # Rotate the bottom 50% energy clones
-                    rotate_idx = energy_clamped.argsort()[B // 2:]
-                    
-                    e_before = energy_clamped[rotate_idx].mean().item()
-                    for idx in rotate_idx:
-                        com = pos_L.data[idx].mean(dim=0, keepdim=True) # (1, 3)
-                        centered = pos_L.data[idx] - com # (N, 3)
-                        
-                        # Random rotation axis and angle (0-180deg)
-                        axis = F.normalize(torch.randn(3, device=device), dim=0)
-                        angle = torch.rand(1, device=device) * math.pi
-                        
-                        # Rodrigues rotation formula
-                        K = torch.tensor([
-                            [0, -axis[2], axis[1]],
-                            [axis[2], 0, -axis[0]],
-                            [-axis[1], axis[0], 0]
-                        ], device=device)
-                        R = (torch.eye(3, device=device) + 
-                             math.sin(angle.item()) * K + 
-                             (1 - math.cos(angle.item())) * (K @ K))
-                        
-                        # Apply rotation + small translation jitter (0.5A)
-                        jitter = torch.randn(1, 3, device=device) * 0.5
-                        pos_L.data[idx] = (centered @ R.T) + com + jitter
-                    
-                    logger.info(f"  [RotSampler] Re-sampled {len(rotate_idx)} clones (Mean E_prev={e_before:.1f})")
-
-            # ── Bug 21: Finalize Recycling State ───────────────────────────
-            # Ensure recycling sees the results of all samplers (Replica/Rotation)
+            # ── Bug 21/25 Fix: Finalize Recycling State ───────────────────
+            # Ensure recycling sees the results of ALL samplers at the absolute end
             prev_pos_L  = pos_L.detach().clone()
             prev_latent = out['latent'].detach().clone()
 
