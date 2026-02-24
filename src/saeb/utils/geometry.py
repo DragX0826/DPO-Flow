@@ -20,16 +20,22 @@ def calculate_kabsch_rmsd(P, Q):
         # Covariance matrix
         H = torch.mm(P_c.t(), Q_c)
         
-        # SVD
-        U, S, V = torch.svd(H)
+        # SVD (Bug Fix 12: Use linalg.svd which is stable/modern)
+        U, S, Vh = torch.linalg.svd(H)
         
-        # Rotation
-        R = torch.mm(V, U.t())
+        # Vh from linalg.svd is V.mH (transpose for real matrices)
+        # So V = Vh.t()
+        V = Vh.t()
+
+        # Rotation matrix calculation
+        # R = V @ U.t()
+        d = torch.det(V @ U.t())
         
-        # Det Check for reflection
-        if torch.det(R) < 0:
+        # Check for reflection
+        if d < 0:
             V[:, -1] *= -1
-            R = torch.mm(V, U.t())
+            
+        R = torch.mm(V, U.t())
             
         # Rotate P
         P_rot = torch.mm(P_c, R.t())
@@ -62,12 +68,13 @@ def calculate_rmsd_hungarian(P, Q):
         # Optimal Assignment
         row_ind, col_ind = linear_sum_assignment(dists**2)
         
-        # Reorder P to match Q
-        P_ordered = P[row_ind]
-        Q_ordered = Q[col_ind]
+        # Refine Fix: Use explicit indices for clarity
+        # row_ind corresponds to P, col_ind to Q
+        P_matched = P[torch.from_numpy(row_ind).to(P.device)]
+        Q_matched = Q[torch.from_numpy(col_ind).to(Q.device)]
         
         # Compute RMSD on ordered pairs
-        return calculate_kabsch_rmsd(P_ordered, Q_ordered)
+        return calculate_kabsch_rmsd(P_matched, Q_matched)
     except Exception as e:
         import logging
         logging.getLogger("SAEB-Flow").error(f"Hungarian RMSD failed: {e}")
@@ -76,11 +83,18 @@ def calculate_rmsd_hungarian(P, Q):
 def calculate_internal_rmsd(pos_batch):
     """
     Calculates the mean pairwise RMSD within a batch of conformations.
+    
+    NOTE: This calculation uses translation-alignment but NOT rotation-alignment.
+    It is suitable for quick ensemble diversity checks but not for rigorous RMSD metrics.
+    
     pos_batch: (B, N, 3)
     Returns: float (Average RMSD)
     """
     B, N, _ = pos_batch.shape
     if B < 2: return 0.0
+    
+    # Translation alignment: center each member of the batch
+    pos_batch = pos_batch - pos_batch.mean(dim=1, keepdim=True)
     
     # Pairwise differences: (B, 1, N, 3) - (1, B, N, 3) -> (B, B, N, 3)
     diff = pos_batch.unsqueeze(1) - pos_batch.unsqueeze(0)

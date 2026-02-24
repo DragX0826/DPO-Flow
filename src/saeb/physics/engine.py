@@ -40,6 +40,7 @@ class PhysicsEngine(nn.Module):
         """Adapt softness based on gradient magnitude (EMA-normalized)."""
         with torch.no_grad():
             self.max_force_ema = 0.99 * self.max_force_ema + 0.01 * force_magnitude
+            # Bug Fix 11: Restore norm_force definition
             norm_force = torch.clamp(
                 torch.tensor(force_magnitude / (self.max_force_ema + 1e-8), 
                              device=self.current_alpha_buffer.device), 0.0, 1.0)
@@ -108,11 +109,19 @@ class PhysicsEngine(nn.Module):
             dielectric = 4.0
             q_L_exp = q_L.unsqueeze(2)   # (B, N_L, 1)
             q_P_exp = q_P.unsqueeze(1)   # (B, 1, N_P)
-            e_elec = (332.06 * q_L_exp * q_P_exp) / (dielectric * soft_dist)
+            e_elec_raw = (332.06 * q_L_exp * q_P_exp) / (dielectric * soft_dist)
+            
+            # --- Bug Fix: Tanh-Compression for Coulombic Gradients ---
+            # Prevents explosive forces when charges overlap at small distances.
+            e_elec = 200.0 * torch.tanh(e_elec_raw / 200.0)
             
             # --- Standard LJ 12-6: 4ε[(σ/r)^12 - (σ/r)^6] ---
+            # Issue Fix: Use atom-specific epsilon for protein atoms
             eps_L = torch.relu(type_probs_L @ self.epsilon[:9].float())
-            eps_ij = torch.sqrt(eps_L.unsqueeze(-1) * 0.15 + 1e-8)
+            # Protein epsilon map: C=0.1, N=0.1, O=0.15, S=0.2 (matching lig types)
+            prot_eps_map = torch.tensor([0.1, 0.1, 0.15, 0.2], device=pos_L.device)
+            eps_P = x_P[..., :4] @ prot_eps_map
+            eps_ij = torch.sqrt(eps_L.unsqueeze(-1) * eps_P.unsqueeze(1) + 1e-8)
             
             ratio = sigma_ij / (soft_dist + 1e-8)
             ratio = torch.clamp(ratio, max=5.0) 
