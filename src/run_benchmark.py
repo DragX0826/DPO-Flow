@@ -204,7 +204,7 @@ def main():
             res = q_out.get()
             results_summary.append(res)
             pdb_id = res["pdb_id"]
-            seed = res.get("seed", "unknown")
+            seed = res["results"].get("seed", "?") if res["status"] == "Success" else res.get("seed", "?")
             if res["status"] == "Success":
                 r = res["results"]
                 logger.info(f" [DONE] {pdb_id} (Seed {seed}): best_rmsd={r['best_rmsd']:.2f}A "

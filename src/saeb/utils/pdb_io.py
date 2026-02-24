@@ -186,10 +186,12 @@ class RealPDBFeaturizer:
                     esm_feat = F.pad(esm_feat, (0, padding))
                 elif esm_feat.size(-1) > 1280:
                     esm_feat = esm_feat[..., :1280]
+                esm_feat = esm_feat.to(self.device)  # ensure on correct device
                 
                 atom_esm = [esm_feat[idx] for idx in atom_to_res_idx]
-                atom_oh_t = torch.tensor(np.array(feats), dtype=torch.float32)[:, :4]
-                x_P_all = torch.cat([atom_oh_t, torch.stack(atom_esm)], dim=-1).to(self.device)
+                # Move both tensors to device BEFORE concatenation
+                atom_oh_t = torch.tensor(np.array(feats), dtype=torch.float32)[:, :4].to(self.device)
+                x_P_all = torch.cat([atom_oh_t, torch.stack(atom_esm)], dim=-1)
             else:
                 x_P_all = torch.tensor(np.array(feats), dtype=torch.float32).to(self.device)
 
