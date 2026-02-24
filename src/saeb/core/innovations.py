@@ -50,23 +50,31 @@ class ShortcutFlowLoss(nn.Module):
         l_reg = 0.01 * v_pred.pow(2).mean()
         return l_self + l_reg
 
-def shortcut_step(pos_L, v_pred, x1_pred, confidence, t, dt):
+def pat_step(pos_L, v_pred, f_phys, alpha_ema, confidence, dt):
     """
-    Confidence-blended position update (CBSF inference).
+    Physics-Adaptive Trust (PAT) step.
+    Blends neural flow and physics force based on EMA-smoothed CosSim trust.
     
     Args:
         pos_L: (B, N, 3)
-        v_pred: (B, N, 3)
-        x1_pred: (B, N, 3)
-        confidence: (B, N, 1)
-        t: scalar
-        dt: scalar
+        v_pred: (B, N, 3)  - Neural direction
+        f_phys: (B, N, 3)  - Physical force (-grad E)
+        alpha_ema: (B, N, 1) - Current trust weights
+        confidence: (B, N, 1) - Neural confidence
+        dt: step size
     """
-    # confidence is already (B, N, 1) — no reshape needed
-    conf = confidence  # (B, N, 1)
-    euler_step = pos_L + v_pred * dt
-    new_pos = (1.0 - conf) * euler_step + conf * x1_pred
+    # Blend directions based on alpha_ema
+    # 1-alpha is neural trust, alpha is physics trust
+    delta = (1.0 - alpha_ema) * v_pred + alpha_ema * f_phys
+    new_pos = pos_L + delta * dt
     return new_pos
+
+def langevin_noise(pos_shape, temperature, dt, device):
+    """Generates Langevin stochastic noise: sqrt(2*T*dt) * N(0,1)"""
+    if temperature <= 1e-6:
+        return torch.zeros(pos_shape, device=device)
+    noise = torch.randn(pos_shape, device=device)
+    return torch.sqrt(torch.tensor(2.0 * temperature * dt, device=device)) * noise
 
 
 def run_with_recycling(model, recycling_encoder, pos_L, x_L, x_P, pos_P, h_P, t_flow, n_recycle=3):
