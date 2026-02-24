@@ -79,6 +79,20 @@ src/
 
 ---
 
+## 🔥 High-Performance Benchmarking (Kaggle)
+
+For best results on Kaggle T4 x 2, our infrastructure supports:
+- **Multi-GPU Parallelization**: Automatically utilizes both T4 GPUs via `torch.multiprocessing` (spawn).
+- **High Fidelity Mode**: 1000 optimization steps + 64 batch sampling (`--high_fidelity`).
+- **Multi-Seed Ensembling**: Run targets across multiple seeds for statistical robustness (`--seeds 42,43,44`).
+
+```bash
+# Example High-Performance Run
+python run_benchmark.py --bench_astex --high_fidelity --seeds 42,43 --num_gpus 2
+```
+
+---
+
 ## 📦 Packaging Results
 
 ```bash

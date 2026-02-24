@@ -67,29 +67,30 @@ DIFFDOCK_TIMESPLIT_362 = [
 ]
 
 
-def run_single_target(pdb_id, device_id, args):
+def run_single_target(pdb_id, device_id, seed, args):
     """Worker function for single-target run."""
-    device = f"cuda:{device_id}" if torch.cuda.is_available() else "cpu"
+    device = f"cuda:{device_id}" if torch.cuda.is_available() and device_id >= 0 else "cpu"
     config = SimulationConfig(
         pdb_id=pdb_id,
-        target_name=f"SAEB_{pdb_id}_G{device_id}",
+        target_name=f"SAEB_{pdb_id}_G{device_id}_S{seed}",
         steps=args.steps,
         batch_size=args.batch_size,
         mode=args.mode,
         pdb_dir=args.pdb_dir,
-        seed=args.seed,
+        seed=seed,
     )
     t0 = time.time()
     try:
         experiment = SAEBFlowExperiment(config)
         results = experiment.run(device=device)
         results["time_sec"] = round(time.time() - t0, 1)
+        results["seed"] = seed
         return {"pdb_id": pdb_id, "status": "Success", "results": results}
     except Exception as e:
         import traceback
         tb = traceback.format_exc()
         return {"pdb_id": pdb_id, "status": "Failed", "error": str(e),
-                "traceback": tb, "time_sec": round(time.time() - t0, 1)}
+                "traceback": tb, "time_sec": round(time.time() - t0, 1), "seed": seed}
 
 
 def main():
@@ -105,7 +106,9 @@ def main():
     parser.add_argument("--steps", type=int, default=300, help="Optimization steps")
     parser.add_argument("--batch_size", type=int, default=16, help="Ensemble clones")
     parser.add_argument("--mode", type=str, default="inference", choices=["train", "inference"])
-    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
+    parser.add_argument("--seed", type=int, default=42, help="Primary random seed")
+    parser.add_argument("--seeds", type=str, default=None, help="Comma-separated list of seeds for ensemble (e.g. 42,43,44)")
+    parser.add_argument("--high_fidelity", action="store_true", help="Set steps=1000, batch_size=64 for high accuracy")
     # Hardware
     parser.add_argument("--num_gpus", type=int, default=max(1, torch.cuda.device_count()))
     parser.add_argument("--kaggle", action="store_true",
@@ -113,6 +116,10 @@ def main():
     # Output
     parser.add_argument("--output_dir", type=str, default="results", help="Output directory")
     args = parser.parse_args()
+
+    if args.high_fidelity:
+        args.steps = 1000
+        args.batch_size = 64
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     logger = logging.getLogger("SAEB-Flow.CLI")
@@ -128,46 +135,71 @@ def main():
     else:
         targets = [ASTEX_DIVERSE_85[0]]  # default: 1aq1
 
-    # Reproducibility
-    import random; import numpy as np
-    torch.manual_seed(args.seed); random.seed(args.seed); np.random.seed(args.seed)
+    seeds = [int(s) for s in args.seeds.split(",")] if args.seeds else [args.seed]
+    
+    # Task queue: (pdb_id, seed)
+    tasks = []
+    for pdb_id in targets:
+        for seed in seeds:
+            tasks.append((pdb_id, seed))
 
-    logger.info(f"SAEB-Flow | targets={len(targets)} | steps={args.steps} | "
-                f"B={args.batch_size} | mode={args.mode} | seed={args.seed} | "
+    logger.info(f"SAEB-Flow | targets={len(targets)} | seeds={len(seeds)} | total_tasks={len(tasks)} | "
+                f"steps={args.steps} | B={args.batch_size} | mode={args.mode} | "
                 f"kaggle={args.kaggle}")
 
     results_summary = []
 
-    if args.kaggle or len(targets) == 1:
+    if args.kaggle or len(tasks) == 1:
         # Sequential mode — safe for Kaggle notebooks (no fork/spawn issues)
-        for i, pdb_id in enumerate(targets):
+        for i, (pdb_id, seed) in enumerate(tasks):
             gpu_id = i % max(1, args.num_gpus)
-            res = run_single_target(pdb_id, gpu_id, args)
+            res = run_single_target(pdb_id, gpu_id, seed, args)
             results_summary.append(res)
             if res["status"] == "Success":
                 r = res["results"]
-                logger.info(f" [DONE] {pdb_id}: best_rmsd={r['best_rmsd']:.2f}A "
-                            f"E={r['final_energy']:.1f} t={r.get('time_sec', res.get('time_sec', 0))}s")
+                logger.info(f" [DONE] {pdb_id} (Seed {seed}): best_rmsd={r['best_rmsd']:.2f}A "
+                            f"E={r['final_energy']:.1f} t={r.get('time_sec', 0)}s")
             else:
-                logger.error(f" [FAIL] {pdb_id}: {res['error']}")
+                logger.error(f" [FAIL] {pdb_id} (Seed {seed}): {res['error']}")
     else:
-        # Parallel mode for local multi-GPU
-        import concurrent.futures
-        max_workers = min(args.num_gpus, len(targets))
-        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as ex:
-            futures = {
-                ex.submit(run_single_target, pdb_id, i % args.num_gpus, args): pdb_id
-                for i, pdb_id in enumerate(targets)
-            }
-            for future in concurrent.futures.as_completed(futures):
-                res = future.result()
-                results_summary.append(res)
-                if res["status"] == "Success":
-                    r = res["results"]
-                    logger.info(f" [DONE] {res['pdb_id']}: best_rmsd={r['best_rmsd']:.2f}A "
-                                f"E={r['final_energy']:.1f} t={res['time_sec']}s")
-                else:
-                    logger.error(f" [FAIL] {res['pdb_id']}: {res['error']}")
+        # Parallel mode for local/Kaggle multi-GPU using torch.multiprocessing (spawn)
+        import torch.multiprocessing as mp
+        try:
+            mp.set_start_method('spawn', force=True)
+        except RuntimeError: pass
+
+        def worker(q_in, q_out, gpu_id, args_copy):
+            while True:
+                task = q_in.get()
+                if task is None: break
+                pdb_id, seed = task
+                res = run_single_target(pdb_id, gpu_id, seed, args_copy)
+                q_out.put(res)
+
+        q_in = mp.Queue()
+        q_out = mp.Queue()
+        for t in tasks: q_in.put(t)
+        for _ in range(args.num_gpus): q_in.put(None)
+
+        processes = []
+        for i in range(args.num_gpus):
+            p = mp.Process(target=worker, args=(q_in, q_out, i, args))
+            p.start()
+            processes.append(p)
+
+        for _ in range(len(tasks)):
+            res = q_out.get()
+            results_summary.append(res)
+            pdb_id = res["pdb_id"]
+            seed = res["results"].get("seed", "unknown") if "results" in res else "err"
+            if res["status"] == "Success":
+                r = res["results"]
+                logger.info(f" [DONE] {pdb_id} (Seed {seed}): best_rmsd={r['best_rmsd']:.2f}A "
+                            f"E={r['final_energy']:.1f}")
+            else:
+                logger.error(f" [FAIL] {pdb_id}: {res.get('error')}")
+
+        for p in processes: p.join()
 
     # CSV output
     csv_path = os.path.join(args.output_dir, "benchmark_results.csv")
