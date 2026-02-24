@@ -20,6 +20,7 @@ env/
 # Jupyter
 .ipynb_checkpoints/
 *.ipynb
+!kaggle_notebook.ipynb
 
 # Data — never commit raw PDB / large binary files
 *.pdb
