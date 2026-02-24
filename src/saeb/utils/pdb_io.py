@@ -61,7 +61,7 @@ class RealPDBFeaturizer:
                 logger.warning(f" [Cache] Failed to load ESM cache for {pdb_id}: {e}")
             
         if not sequence: return None
-        model, alphabet = get_esm_model()
+        model, alphabet = get_esm_model(device=self.device)
         if model is None: return None
         
         logger.info(f"Dynamically Generating Embeddings for {pdb_id} ({len(sequence)} AA)...")
