@@ -95,6 +95,9 @@ def run_single_target(pdb_id, device_id, seed, args):
         compile_backbone=getattr(args, "compile_backbone", False),
         mmff_snap_fraction=getattr(args, "mmff_snap_fraction", 0.50),
         no_target_plots=getattr(args, "no_target_plots", False),
+        final_mmff_topk=getattr(args, "final_mmff_topk", 5),
+        final_mmff_max_iter=getattr(args, "final_mmff_max_iter", 2000),
+        no_pose_dump=getattr(args, "no_pose_dump", False),
     )
 
     t0 = time.time()
@@ -164,6 +167,12 @@ def main():
                         help="Skip per-target plotting to reduce benchmark overhead")
     parser.add_argument("--no_aggregate_figures", action="store_true",
                         help="Skip aggregate figure generation for faster sweeps")
+    parser.add_argument("--final_mmff_topk", type=int, default=5,
+                        help="Top-K low-energy clones for final MMFF polishing (<=0 disables)")
+    parser.add_argument("--final_mmff_max_iter", type=int, default=2000,
+                        help="MMFF iterations for final polish")
+    parser.add_argument("--no_pose_dump", action="store_true",
+                        help="Skip saving per-target best PDB to results/")
     # Output
     parser.add_argument("--output_dir", type=str, default="results", help="Output directory")
     # Comparison
@@ -191,6 +200,12 @@ def main():
     if args.mmff_snap_fraction < 0.0 or args.mmff_snap_fraction > 1.0:
         logger.warning(f"mmff_snap_fraction={args.mmff_snap_fraction} out of range; clamping to [0,1].")
         args.mmff_snap_fraction = min(1.0, max(0.0, args.mmff_snap_fraction))
+    if args.final_mmff_topk < 0:
+        logger.warning(f"final_mmff_topk={args.final_mmff_topk} is invalid; clamping to 0.")
+        args.final_mmff_topk = 0
+    if args.final_mmff_max_iter < 10:
+        logger.warning(f"final_mmff_max_iter={args.final_mmff_max_iter} too small; clamping to 10.")
+        args.final_mmff_max_iter = 10
 
     if args.high_fidelity:
         logger.info(f"High-fidelity mode: steps={args.steps}, B={args.batch_size}")
@@ -222,7 +237,9 @@ def main():
                 f"steps={args.steps} | B={args.batch_size} | mode={args.mode} | "
                 f"kaggle={args.kaggle} | amp={args.amp} | compile={args.compile_backbone} | "
                 f"snap_frac={args.mmff_snap_fraction:.2f} | no_target_plots={args.no_target_plots} | "
-                f"no_aggregate_figures={args.no_aggregate_figures}")
+                f"no_aggregate_figures={args.no_aggregate_figures} | "
+                f"final_mmff_topk={args.final_mmff_topk} | final_mmff_max_iter={args.final_mmff_max_iter} | "
+                f"no_pose_dump={args.no_pose_dump}")
 
     results_summary = []
 

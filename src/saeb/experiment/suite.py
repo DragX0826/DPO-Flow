@@ -1163,6 +1163,66 @@ class SAEBFlowRefinement:
         B = self.config.batch_size
         N = pos_native.shape[0]
 
+        # If FK-SMC / SOCM / SRPG is requested, route through the dedicated refine()
+        # implementation where these algorithms are actually applied.
+        use_refine_engine = (use_fksmc or use_socm_twist or use_srpg) and not no_backbone
+        if use_refine_engine:
+            logger.info("  [Run] Delegating to refine() for FK-SMC/SOCM/SRPG path")
+            pos_L_init = torch.randn(B, N, 3, device=device)
+            refine_out = self.refine(
+                pos_L_init=pos_L_init,
+                pos_P=pos_P,
+                x_P=x_P,
+                q_P=q_P,
+                x_L=x_L_native,
+                q_L=q_L_native,
+                pocket_anchor=torch.zeros(3, device=device),
+                device=device,
+                mol_template=lig_template,
+                steps=self.config.steps,
+                use_fksmc=use_fksmc,
+                use_socm_twist=use_socm_twist,
+                use_srpg=use_srpg,
+                no_backbone=no_backbone,
+            )
+
+            refined_poses = refine_out.get("refined_poses", pos_L_init)
+            if refined_poses.dim() == 2:
+                refined_poses = refined_poses.unsqueeze(0)
+
+            with torch.no_grad():
+                final_rmsd_all = kabsch_rmsd(refined_poses, pos_native)
+                best_idx = final_rmsd_all.argmin()
+                pos_L_final = refined_poses[best_idx:best_idx+1].detach()
+                best_rmsd = final_rmsd_all[best_idx].item()
+                best_pos = pos_L_final[0].detach().cpu().numpy()
+
+            history_E = refine_out.get("history_E", [])
+            final_energy = float(history_E[-1]) if history_E else float("nan")
+
+            print(f"\n{'='*55}")
+            print(f" {self.config.pdb_id:8s}  best={best_rmsd:.2f}A  "
+                  f"mean={final_rmsd_all.mean():.2f}A  E={final_energy:.1f}")
+            if history_E:
+                print(self.visualizer.interpreter.interpret_energy_trend(history_E))
+            print(f"{'='*55}\n")
+
+            if not getattr(self.config, "no_pose_dump", False):
+                os.makedirs("results", exist_ok=True)
+                save_points_as_pdb(best_pos, f"results/{self.config.pdb_id}_best.pdb")
+
+            return {
+                "pdb_id":          self.config.pdb_id,
+                "best_rmsd":       best_rmsd,
+                "mean_rmsd":       final_rmsd_all.mean().item(),
+                "final_energy":    final_energy,
+                "mean_cossim":     float("nan"),
+                "steps":           self.config.steps,
+                "log_Z_final":     refine_out.get("log_Z_final", float("nan")),
+                "ess_min":         refine_out.get("ess_min", float("nan")),
+                "resample_count":  refine_out.get("resample_count", 0),
+            }
+
         # ── Ligand ensemble initialisation ──────────────────────────────────
         # Initialize with standard spherical noise; will be refined by PCA sampling below
         pos_L = nn.Parameter(torch.randn(B, N, 3, device=device))
@@ -1698,21 +1758,28 @@ class SAEBFlowRefinement:
                     f"lr={lr_now:.2e}"
                 )
         # ── Final Selection: Best-N Ensemble MMFF Polish ──────────────────────
-        # Fix for positive-energy targets: polish top-5 lowest-energy clones.
+        # Fix for positive-energy targets: polish lowest-energy clones.
+        final_mmff_topk = int(getattr(self.config, "final_mmff_topk", 5))
+        final_mmff_topk = max(0, min(final_mmff_topk, B))
+        final_mmff_max_iter = int(getattr(self.config, "final_mmff_max_iter", 2000))
+        final_mmff_max_iter = max(10, final_mmff_max_iter)
+
         with torch.no_grad():
-            if not is_train and lig_template is not None:
-                logger.info("  [Refine] Best-N MMFF Polish (top 5 lowest-energy clones, 2000 iters)...")
+            if not is_train and lig_template is not None and final_mmff_topk > 0:
+                logger.info(
+                    f"  [Refine] Best-N MMFF Polish (top {final_mmff_topk} lowest-energy clones, "
+                    f"{final_mmff_max_iter} iters)..."
+                )
                 try:
                     final_e, _, _, _ = self.phys.compute_energy(
                         pos_L.detach(), pos_P_b, q_L_b, q_P_b, x_L.detach(), x_P_b, 1.0
                     )
-                    top_k = min(5, B)
-                    top_idx = final_e.topk(top_k, largest=False).indices.tolist()
+                    top_idx = final_e.topk(final_mmff_topk, largest=False).indices.tolist()
                     candidate_pool = pos_L.data[top_idx].clone()
                     if best_pos_history is not None:
                         hist_t = best_pos_history.unsqueeze(0)
                         candidate_pool = torch.cat([hist_t, candidate_pool], dim=0)
-                    self._mmff_refine(candidate_pool, lig_template, max_iter=2000)
+                    self._mmff_refine(candidate_pool, lig_template, max_iter=final_mmff_max_iter)
                     cand_rmsd = kabsch_rmsd(candidate_pool, pos_native)
                     best_cand = cand_rmsd.argmin()
                     pos_L_final = candidate_pool[best_cand].unsqueeze(0)
@@ -1734,14 +1801,17 @@ class SAEBFlowRefinement:
             best_pos   = pos_L_final[0].detach().cpu().numpy()
 
         print(f"\n{'='*55}")
+        final_energy = history_E[-1] if history_E else float("nan")
         print(f" {self.config.pdb_id:8s}  best={best_rmsd:.2f}A  "
-              f"mean={final_rmsd.mean():.2f}A  E={history_E[-1]:.1f}")
-        print(self.visualizer.interpreter.interpret_energy_trend(history_E))
+              f"mean={final_rmsd.mean():.2f}A  E={final_energy:.1f}")
+        if history_E:
+            print(self.visualizer.interpreter.interpret_energy_trend(history_E))
         print(f"{'='*55}\n")
 
         # Save best pose
-        os.makedirs("results", exist_ok=True)
-        save_points_as_pdb(best_pos, f"results/{self.config.pdb_id}_best.pdb")
+        if not getattr(self.config, "no_pose_dump", False):
+            os.makedirs("results", exist_ok=True)
+            save_points_as_pdb(best_pos, f"results/{self.config.pdb_id}_best.pdb")
 
         # Per-target plots can dominate IO in benchmark sweeps; keep optional.
         if not getattr(self.config, "no_target_plots", False):
@@ -1759,11 +1829,10 @@ class SAEBFlowRefinement:
             "pdb_id":          self.config.pdb_id,
             "best_rmsd":       best_rmsd,
             "mean_rmsd":       final_rmsd.mean().item(),
-            "final_energy":    history_E[-1],
+            "final_energy":    final_energy,
             "mean_cossim":     np.mean(history_CosSim) if history_CosSim else 0.0,
             "steps":           total_steps,
-            # Claim-3 metrics — fksmc is a local in refine(); use locals().get() for safety
-            "log_Z_final":     getattr(locals().get("fksmc"), "log_Z", float("nan")),
-            "ess_min":         getattr(locals().get("fksmc"), "ess_min_record", float("nan")),
-            "resample_count":  getattr(locals().get("fksmc"), "resample_count", 0),
+            "log_Z_final":     float("nan"),
+            "ess_min":         float("nan"),
+            "resample_count":  0,
         }

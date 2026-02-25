@@ -48,6 +48,12 @@ def main():
                         help="Skip per-target plots for faster benchmark runs")
     parser.add_argument("--no_aggregate_figures", action="store_true",
                         help="Skip aggregate figure generation")
+    parser.add_argument("--final_mmff_topk", type=int, default=5,
+                        help="Top-K low-energy clones for final MMFF polish")
+    parser.add_argument("--final_mmff_max_iter", type=int, default=2000,
+                        help="Final MMFF max iterations")
+    parser.add_argument("--no_pose_dump", action="store_true",
+                        help="Skip writing best pose PDB files")
     parser.add_argument("--output_dir", type=str, default="results/astex10_fksmc_socm")
     args = parser.parse_args()
 
@@ -75,6 +81,10 @@ def main():
         "--socm",
         "--mmff_snap_fraction",
         str(args.mmff_snap_fraction),
+        "--final_mmff_topk",
+        str(args.final_mmff_topk),
+        "--final_mmff_max_iter",
+        str(args.final_mmff_max_iter),
     ]
 
     if args.pdb_dir:
@@ -97,6 +107,8 @@ def main():
         cmd.append("--no_target_plots")
     if args.no_aggregate_figures:
         cmd.append("--no_aggregate_figures")
+    if args.no_pose_dump:
+        cmd.append("--no_pose_dump")
 
     print("Launching:", " ".join(cmd))
     result = subprocess.run(cmd)

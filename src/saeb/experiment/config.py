@@ -62,6 +62,9 @@ class SimulationConfig:
     compile_backbone: bool = False
     mmff_snap_fraction: float = 0.50
     no_target_plots: bool = False
+    final_mmff_topk: int = 5
+    final_mmff_max_iter: int = 2000
+    no_pose_dump: bool = False
     
     def to_dict(self):
         return {k: v for k, v in self.__dict__.items() if not k.startswith('_')}
