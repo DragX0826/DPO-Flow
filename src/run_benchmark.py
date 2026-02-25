@@ -83,6 +83,10 @@ def run_single_target(pdb_id, device_id, seed, args):
         socm=args.socm,
         srpg=args.srpg,
         no_backbone=getattr(args, "no_backbone", False),  # B6
+        amp=getattr(args, "amp", False),
+        compile_backbone=getattr(args, "compile_backbone", False),
+        mmff_snap_fraction=getattr(args, "mmff_snap_fraction", 0.50),
+        no_target_plots=getattr(args, "no_target_plots", False),
     )
 
     t0 = time.time()
@@ -137,6 +141,14 @@ def main():
     parser.add_argument("--num_gpus", type=int, default=max(1, torch.cuda.device_count()))
     parser.add_argument("--kaggle", action="store_true",
                         help="Kaggle mode: sequential execution (no multiprocessing)")
+    parser.add_argument("--amp", action="store_true",
+                        help="Enable CUDA AMP autocast for backbone forward path")
+    parser.add_argument("--compile_backbone", action="store_true",
+                        help="Use torch.compile on backbone (CUDA only)")
+    parser.add_argument("--mmff_snap_fraction", type=float, default=0.50,
+                        help="Fraction of worst-energy clones to MMFF-snap during mid-run (0,1]")
+    parser.add_argument("--no_target_plots", action="store_true",
+                        help="Skip per-target plotting to reduce benchmark overhead")
     # Output
     parser.add_argument("--output_dir", type=str, default="results", help="Output directory")
     # Comparison
@@ -190,7 +202,8 @@ def main():
 
     logger.info(f"SAEB-Flow | targets={len(targets)} | seeds={len(seeds)} | total_tasks={len(tasks)} | "
                 f"steps={args.steps} | B={args.batch_size} | mode={args.mode} | "
-                f"kaggle={args.kaggle}")
+                f"kaggle={args.kaggle} | amp={args.amp} | compile={args.compile_backbone} | "
+                f"snap_frac={args.mmff_snap_fraction:.2f} | no_target_plots={args.no_target_plots}")
 
     results_summary = []
 

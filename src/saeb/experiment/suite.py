@@ -730,11 +730,17 @@ class SAEBFlowExperiment:
         except Exception as e:
             logger.warning(f"  [Refine] L-BFGS step failed: {e}")
 
-    def _mmff_refine(self, pos_L, mol_template, max_iter=200):
+    def _mmff_refine(self, pos_L, mol_template, max_iter=200, indices=None):
         """Physics-Aware MMFF refinement helper."""
-        if mol_template is None: return
+        if mol_template is None:
+            return
         B_cur = pos_L.size(0)
-        for i in range(B_cur):
+        if indices is None:
+            indices = range(B_cur)
+        for i in indices:
+            i = int(i)
+            if i < 0 or i >= B_cur:
+                continue
             try:
                 refined = self.phys.minimize_with_mmff(mol_template, pos_L[i], max_iter=max_iter)
                 if refined.shape == pos_L.data[i].shape:
@@ -1107,11 +1113,17 @@ class SAEBFlowRefinement:
         except Exception:
             return None
 
-    def _mmff_refine(self, pos_L, mol_template, max_iter=200):
+    def _mmff_refine(self, pos_L, mol_template, max_iter=200, indices=None):
         """Physics-Aware MMFF refinement helper."""
-        if mol_template is None: return
+        if mol_template is None:
+            return
         B_cur = pos_L.size(0)
-        for i in range(B_cur):
+        if indices is None:
+            indices = range(B_cur)
+        for i in indices:
+            i = int(i)
+            if i < 0 or i >= B_cur:
+                continue
             try:
                 refined = self.phys.minimize_with_mmff(mol_template, pos_L[i], max_iter=max_iter)
                 if refined.shape == pos_L.data[i].shape:
@@ -1156,6 +1168,15 @@ class SAEBFlowRefinement:
         # ── Model ───────────────────────────────────────────────────────────
         backbone = SAEBFlowBackbone(167, 64, num_layers=2).to(device)
         model    = RectifiedFlow(backbone).to(device)
+        use_amp = bool(getattr(self.config, "amp", False) and device.type == "cuda")
+        use_compile_backbone = bool(getattr(self.config, "compile_backbone", False) and device.type == "cuda")
+        if use_compile_backbone and hasattr(torch, "compile"):
+            try:
+                model.backbone = torch.compile(model.backbone, mode="reduce-overhead")
+                logger.info("  [Speed] torch.compile enabled for backbone")
+            except Exception as e:
+                logger.warning(f"  [Speed] torch.compile skipped: {e}")
+                use_compile_backbone = False
 
         cbsf_loss_fn = ShortcutFlowLoss(lambda_x1=1.0, lambda_conf=0.01).to(device)
 
@@ -1288,16 +1309,27 @@ class SAEBFlowRefinement:
             opt_muon.zero_grad()
 
             # ── Forward ─────────────────────────────────────────────────────
-            out = model(
-                x_L=x_L, x_P=x_P_b,
-                pos_L=pos_L, pos_P=pos_P_b,
-                t=t_t,
-                prev_pos_L=prev_pos_L,
-                prev_latent=prev_latent,
-            )
-            v_pred     = out['v_pred']      # (B, N, 3)
-            x1_pred    = out['x1_pred']     # (B, N, 3)
-            confidence = out['confidence']  # (B, N, 1)
+            if use_amp:
+                with torch.autocast(device_type="cuda", dtype=torch.float16):
+                    out = model(
+                        x_L=x_L, x_P=x_P_b,
+                        pos_L=pos_L, pos_P=pos_P_b,
+                        t=t_t,
+                        prev_pos_L=prev_pos_L,
+                        prev_latent=prev_latent,
+                    )
+            else:
+                out = model(
+                    x_L=x_L, x_P=x_P_b,
+                    pos_L=pos_L, pos_P=pos_P_b,
+                    t=t_t,
+                    prev_pos_L=prev_pos_L,
+                    prev_latent=prev_latent,
+                )
+            # Keep physics path in fp32 for stability.
+            v_pred     = out['v_pred'].to(dtype=pos_L.dtype)      # (B, N, 3)
+            x1_pred    = out['x1_pred'].to(dtype=pos_L.dtype)     # (B, N, 3)
+            confidence = out['confidence'].to(dtype=pos_L.dtype)  # (B, N, 1)
 
             # (Recycling storage moved to end of loop to fix Bug 21 consistency)
 
@@ -1449,7 +1481,7 @@ class SAEBFlowRefinement:
                 
                 # Imp 3 v3.3: Adaptive Sentiment Threshold
                 # Scale tau based on CosSim variance to break stale consensus
-                c_var = c_i.var() if B > 1 else 0.0
+                c_var = c_i.var() if B > 1 else torch.zeros((), device=device, dtype=c_i.dtype)
                 tau_adaptive = tau * (1.0 + torch.tanh(c_var * 10.0))
                 alpha_tilt = torch.sigmoid(-c_i / (tau_adaptive + 1e-6))
                 
@@ -1568,14 +1600,19 @@ class SAEBFlowRefinement:
             # Rationale: MMFF is CPU-only & expensive (B clones × 10 iters).
             # In early steps geometry is still far from pocket — MMFF rarely helps.
             # Firing only in 2nd half saves ~40% MMFF wall-time with negligible quality loss.
-            snapper_start = max(warmup_steps, steps // 2)
-            snapper_interval = max(60, steps // 5)  # adaptive: ~5 snaps per run
+            snapper_start = max(warmup_steps, total_steps // 2)
+            snapper_interval = max(60, total_steps // 5)  # adaptive: ~5 snaps per run
             if step >= snapper_start and step % snapper_interval == 0:
                 with torch.no_grad():
-                    logger.info(f"  [Snapper] Performing ensemble MMFF snap (10 iters)...")
+                    snap_fraction = float(getattr(self.config, "mmff_snap_fraction", 0.50))
+                    snap_fraction = min(1.0, max(0.0, snap_fraction))
                     if not is_train:
-                        # Inference mode uses MMFF for ground-truth alignment
-                        self._mmff_refine(pos_L, lig_template, max_iter=10)
+                        # Snap only worst-energy clones during mid-run for better wall-time.
+                        snap_k = max(1, int(math.ceil(B * snap_fraction))) if snap_fraction > 0 else 0
+                        if snap_k > 0:
+                            snap_idx = energy_clamped.argsort(descending=True)[:snap_k]
+                            logger.info(f"  [Snapper] MMFF snap on {snap_k}/{B} worst clones (10 iters)...")
+                            self._mmff_refine(pos_L, lig_template, max_iter=10, indices=snap_idx.tolist())
                     else:
                         # Training mode still uses differentiable L-BFGS for grad flow
                         for idx in range(B):
@@ -1616,7 +1653,7 @@ class SAEBFlowRefinement:
             # ── Bug 21/25 Fix: Finalize Recycling State ───────────────────
             # Ensure recycling sees the results of ALL samplers at the absolute end
             prev_pos_L  = pos_L.detach().clone()
-            prev_latent = out['latent'].detach().clone()
+            prev_latent = out['latent'].detach().to(dtype=pos_L.dtype).clone()
 
             # ── Log ────────────────────────────────────────────────────────
             if step % log_every == 0 or step == total_steps - 1:
@@ -1660,16 +1697,17 @@ class SAEBFlowRefinement:
         os.makedirs("results", exist_ok=True)
         save_points_as_pdb(best_pos, f"results/{self.config.pdb_id}_best.pdb")
 
-        # Per-target plots
-        self.visualizer.plot_convergence_dynamics(
-            history_E, filename=f"conv_{self.config.pdb_id}.pdf"
-        )
-        self.visualizer.plot_rmsd_convergence(
-            history_RMSD, filename=f"rmsd_{self.config.pdb_id}.pdf"
-        )
-        self.visualizer.plot_alignment_trends(
-            history_CosSim, filename=f"align_{self.config.pdb_id}.pdf"
-        )
+        # Per-target plots can dominate IO in benchmark sweeps; keep optional.
+        if not getattr(self.config, "no_target_plots", False):
+            self.visualizer.plot_convergence_dynamics(
+                history_E, filename=f"conv_{self.config.pdb_id}.pdf"
+            )
+            self.visualizer.plot_rmsd_convergence(
+                history_RMSD, filename=f"rmsd_{self.config.pdb_id}.pdf"
+            )
+            self.visualizer.plot_alignment_trends(
+                history_CosSim, filename=f"align_{self.config.pdb_id}.pdf"
+            )
 
         return {
             "pdb_id":        self.config.pdb_id,

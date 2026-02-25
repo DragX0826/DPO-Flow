@@ -40,6 +40,12 @@ def main():
     parser.add_argument("--num_gpus", type=int, default=None, help="Optional override")
     parser.add_argument("--kaggle", action="store_true", help="Pass-through flag")
     parser.add_argument("--high_fidelity", action="store_true")
+    parser.add_argument("--amp", action="store_true", help="Enable CUDA AMP")
+    parser.add_argument("--compile_backbone", action="store_true", help="Enable torch.compile backbone")
+    parser.add_argument("--mmff_snap_fraction", type=float, default=0.50,
+                        help="Fraction of worst clones to MMFF-snap in mid-run")
+    parser.add_argument("--no_target_plots", action="store_true",
+                        help="Skip per-target plots for faster benchmark runs")
     parser.add_argument("--output_dir", type=str, default="results/astex10_fksmc_socm")
     args = parser.parse_args()
 
@@ -65,6 +71,8 @@ def main():
         args.output_dir,
         "--fksmc",
         "--socm",
+        "--mmff_snap_fraction",
+        str(args.mmff_snap_fraction),
     ]
 
     if args.pdb_dir:
@@ -79,6 +87,12 @@ def main():
         cmd.append("--kaggle")
     if args.high_fidelity:
         cmd.append("--high_fidelity")
+    if args.amp:
+        cmd.append("--amp")
+    if args.compile_backbone:
+        cmd.append("--compile_backbone")
+    if args.no_target_plots:
+        cmd.append("--no_target_plots")
 
     print("Launching:", " ".join(cmd))
     result = subprocess.run(cmd)

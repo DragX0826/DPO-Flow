@@ -56,6 +56,12 @@ class SimulationConfig:
     srpg: bool = False
     # v10.0 Ablation flags (B4 fix)
     no_backbone: bool = False
+
+    # v10.2 Runtime acceleration knobs
+    amp: bool = False
+    compile_backbone: bool = False
+    mmff_snap_fraction: float = 0.50
+    no_target_plots: bool = False
     
     def to_dict(self):
         return {k: v for k, v in self.__dict__.items() if not k.startswith('_')}
