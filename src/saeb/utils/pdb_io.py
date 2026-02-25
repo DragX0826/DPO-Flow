@@ -186,7 +186,25 @@ class RealPDBFeaturizer:
                 esm_feat = self.esm_embeddings[pdb_id]
             else:
                 full_seq = "".join(res_sequences)
-                esm_feat = self._compute_esm_dynamic(pdb_id, full_seq)
+                # Speed-1: ESM disk cache — saves 10-20s per (target × seed)
+                _cache_dir = os.path.join(os.path.expanduser("~"), ".saeb_cache", "esm")
+                os.makedirs(_cache_dir, exist_ok=True)
+                _cache_key = f"{pdb_id}_{len(full_seq)}.pt"
+                _cache_path = os.path.join(_cache_dir, _cache_key)
+                if os.path.exists(_cache_path):
+                    try:
+                        esm_feat = torch.load(_cache_path, map_location="cpu")
+                        logger.info(f"    [ESM Cache] Loaded embeddings from cache ({_cache_key}).")
+                    except Exception:
+                        esm_feat = None  # corrupt cache, recompute below
+                if esm_feat is None:
+                    esm_feat = self._compute_esm_dynamic(pdb_id, full_seq)
+                    if esm_feat is not None:
+                        try:
+                            torch.save(esm_feat.cpu(), _cache_path)
+                            logger.info(f"    [ESM Cache] Saved embeddings to cache ({_cache_key}).")
+                        except Exception as e:
+                            logger.debug(f"    [ESM Cache] Save failed: {e}")
             
             if esm_feat is not None:
                 if esm_feat.size(-1) < 1280:

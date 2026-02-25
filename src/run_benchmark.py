@@ -179,10 +179,13 @@ def main():
 
     seeds = [int(s) for s in args.seeds.split(",")] if args.seeds else [args.seed]
     
-    # Task queue: (pdb_id, seed)
+    # Speed-3: Interleaved task scheduling for multi-GPU efficiency.
+    # OLD order: [(tgt1,s42),(tgt1,s43),(tgt2,s42),(tgt2,s43),...] — GPU-0 idle during seed switch
+    # NEW order: [(tgt1,s42),(tgt2,s42),...,(tgt1,s43),...] — GPU-0 and GPU-1 both busy at all times
+    # On T4×2 with num_gpus=2: GPU-0 handles seed=42, GPU-1 handles seed=43 simultaneously.
     tasks = []
-    for pdb_id in targets:
-        for seed in seeds:
+    for seed in seeds:
+        for pdb_id in targets:
             tasks.append((pdb_id, seed))
 
     logger.info(f"SAEB-Flow | targets={len(targets)} | seeds={len(seeds)} | total_tasks={len(tasks)} | "

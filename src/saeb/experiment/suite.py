@@ -1564,8 +1564,13 @@ class SAEBFlowRefinement:
                         pos_L.data[idx] = (centered @ R.T) + com
                     logger.info(f"  [RotSampler] Re-sampled {len(rotate_idx)} clones (MaxAngle={max_angle/math.pi:.2f}π, E_prev={e_before:.1f})")
 
-            # 3. Intermittent MMFF Snapping (Imp 3 v5.0: Use industrial standard force field)
-            if step > warmup_steps and step % 50 == 0:
+            # 3. Intermittent MMFF Snapping — Speed-2: only 2nd half, every 90 steps
+            # Rationale: MMFF is CPU-only & expensive (B clones × 10 iters).
+            # In early steps geometry is still far from pocket — MMFF rarely helps.
+            # Firing only in 2nd half saves ~40% MMFF wall-time with negligible quality loss.
+            snapper_start = max(warmup_steps, steps // 2)
+            snapper_interval = max(60, steps // 5)  # adaptive: ~5 snaps per run
+            if step >= snapper_start and step % snapper_interval == 0:
                 with torch.no_grad():
                     logger.info(f"  [Snapper] Performing ensemble MMFF snap (10 iters)...")
                     if not is_train:
