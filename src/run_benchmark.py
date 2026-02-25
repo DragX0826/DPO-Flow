@@ -226,20 +226,24 @@ def main():
 
     results_summary = []
 
-    if (not args.num_gpus or args.num_gpus <= 1) or len(tasks) == 1:
-        # Sequential mode — safe for single GPU or single task.
-        # Note: We no longer force sequential just because of --kaggle flag,
-        # allowing multi-GPU to leverage spawn-based multiprocessing.
+    # Kaggle/Jupyter note: mp.Process child stdout is NOT visible in Jupyter cells.
+    # --kaggle forces sequential mode so all output stays in main process.
+    force_sequential = args.kaggle or (not args.num_gpus or args.num_gpus <= 1) or len(tasks) == 1
+    if force_sequential:
+        # Sequential interleaved: alternate GPUs via modulo (no subprocess spawn)
         for i, (pdb_id, seed) in enumerate(tasks):
             gpu_id = i % max(1, args.num_gpus)
+            logger.info(f" [START] GPU:{gpu_id}  {pdb_id}  (Seed {seed})  [{i+1}/{len(tasks)}]")
+            import sys; sys.stdout.flush()
             res = run_single_target(pdb_id, gpu_id, seed, args)
             results_summary.append(res)
             if res["status"] == "Success":
                 r = res["results"]
-                logger.info(f" [DONE] {pdb_id} (Seed {seed}): best_rmsd={r['best_rmsd']:.2f}A "
-                            f"E={r['final_energy']:.1f} t={r.get('time_sec', 0)}s")
+                logger.info(f" [DONE]  {pdb_id} (Seed {seed}): best_rmsd={r['best_rmsd']:.2f}A "
+                            f"E={r['final_energy']:.1f}  t={r.get('time_sec', 0):.0f}s")
             else:
-                logger.error(f" [FAIL] {pdb_id} (Seed {seed}): {res['error']}")
+                logger.error(f" [FAIL]  {pdb_id} (Seed {seed}): {res['error']}")
+            sys.stdout.flush()
     else:
         # Parallel mode for local/Kaggle multi-GPU using torch.multiprocessing (spawn)
         import torch.multiprocessing as mp
