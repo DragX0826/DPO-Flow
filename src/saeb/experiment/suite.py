@@ -865,19 +865,30 @@ class SAEBFlowRefinement:
         # P0-3: ETKDG-initialized starting conformations
         # If mol_template is available, generate physically valid starting geometry
         # before the physics optimization loop begins, reducing bond angle violations.
-        if mol_template is not None and mol_template.GetNumConformers() > 0:
+        if mol_template is not None:
             try:
                 from rdkit.Chem import AllChem
                 for b in range(B):
-                    # Embed with ETKDG (ETKDGv3 for best-quality distance geometry)
-                    mol_copy = Chem.RWMol(mol_template)
-                    mol_copy.RemoveAllConformers()
+                    # Embed with ETKDG (ETKDGv3 for best-quality distance geometry).
+                    # Use explicit-H embedding for better geometry; map back to heavy atoms.
+                    mol_copy = Chem.Mol(mol_template)
+                    mol_base = Chem.RemoveHs(mol_copy)
+                    if mol_base.GetNumAtoms() != N:
+                        mol_base = Chem.Mol(mol_copy)
+                    mol_embed = Chem.AddHs(mol_base, addCoords=True)
+                    heavy_idx = [a.GetIdx() for a in mol_embed.GetAtoms() if a.GetAtomicNum() > 1]
+                    if len(heavy_idx) != N:
+                        continue
+                    mol_embed.RemoveAllConformers()
                     params = AllChem.ETKDGv3()
                     params.randomSeed = b  # Diverse starting conformations
-                    if AllChem.EmbedMolecule(mol_copy, params) == 0:
-                        conf = mol_copy.GetConformer()
+                    if AllChem.EmbedMolecule(mol_embed, params) == 0:
+                        conf = mol_embed.GetConformer()
                         # Translate to pocket_anchor region
-                        etkdg_pos = torch.tensor(conf.GetPositions(), device=device, dtype=torch.float32)
+                        conf_pos = torch.tensor(conf.GetPositions(), device=device, dtype=torch.float32)
+                        etkdg_pos = conf_pos[heavy_idx]
+                        if etkdg_pos.shape[0] != N:
+                            continue
                         etkdg_center = etkdg_pos.mean(dim=0, keepdim=True)
                         etkdg_pos = etkdg_pos - etkdg_center + pocket_anchor.unsqueeze(0)
                         # Add small random offset to diversify starting positions
@@ -905,6 +916,7 @@ class SAEBFlowRefinement:
         best_E = torch.full((B,), float('inf'), device=device)
         best_pos = pos_L.detach().clone()
         dt = 1.0 / steps
+        min_adaptive_stop_step = max(40, int(0.4 * steps))
 
         # v10.1: Initialize FK-SMC with annealed beta and rejuvenation
         fksmc = FeynmanKacSMC(
@@ -1019,7 +1031,7 @@ class SAEBFlowRefinement:
             history_E.append(avg_e)
             
             # v8.0: Adaptive Early Stopping (TTC Scaling)
-            if len(history_E) > 20:
+            if step >= min_adaptive_stop_step and len(history_E) > 20:
                 imp = abs(history_E[-1] - history_E[-15])
                 if imp < adaptive_stop_thresh:
                     logger.info(f"  [Refine] Adaptive stop at step {step} (imp={imp:.4f})")

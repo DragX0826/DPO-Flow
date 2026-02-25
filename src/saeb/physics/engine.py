@@ -263,10 +263,15 @@ class PhysicsEngine(nn.Module):
             mol_h.AddConformer(conf, assignId=True)
         Chem.GetSymmSSSR(mol_h)
             
-        ff = AllChem.MMFFGetMoleculeForceField(mol_h, AllChem.MMFFGetMoleculeProperties(mol_h))
-        if ff is None:
+        try:
+            props = AllChem.MMFFGetMoleculeProperties(mol_h)
+            ff = AllChem.MMFFGetMoleculeForceField(mol_h, props) if props is not None else None
+            if ff is None:
+                return 0.0
+            return ff.CalcEnergy()
+        except Exception as e:
+            logger.debug(f"  [PhysicsEngine] MMFF energy failed: {e}")
             return 0.0
-        return ff.CalcEnergy()
 
     def minimize_with_mmff(self, mol, pos, max_iter=200):
         """
@@ -286,31 +291,46 @@ class PhysicsEngine(nn.Module):
         Chem.GetSymmSSSR(mol_h)
 
         minimized = False
-        ff = AllChem.MMFFGetMoleculeForceField(mol_h, AllChem.MMFFGetMoleculeProperties(mol_h))
+        try:
+            props = AllChem.MMFFGetMoleculeProperties(mol_h)
+            ff = AllChem.MMFFGetMoleculeForceField(mol_h, props) if props is not None else None
+        except Exception as e:
+            logger.debug(f"  [PhysicsEngine] MMFF init failed: {e}")
+            ff = None
         if ff:
-            # Fix heavy atoms: only optimize the added hydrogens and internal torsions
-            for i in range(mol_prep.GetNumAtoms()):
-                ff.AddFixedPoint(i)
-            ff.Minimize(maxIts=max_iter)
-            minimized = True
+            try:
+                # Fix heavy atoms: only optimize the added hydrogens and internal torsions
+                for i in range(mol_prep.GetNumAtoms()):
+                    ff.AddFixedPoint(i)
+                ff.Minimize(maxIts=max_iter)
+                minimized = True
+            except Exception as e:
+                logger.warning(f"  [PhysicsEngine] MMFF minimization failed, trying UFF fallback: {e}")
 
         # P0-3 UFF Fallback: for molecules MMFF94 can't handle (phosphate, metals, etc.)
         if not minimized:
             uff = AllChem.UFFGetMoleculeForceField(mol_h)
             if uff:
-                logger.debug("  [PhysicsEngine] MMFF94 unavailable, using UFF fallback")
-                # Fix heavy atoms, allow H to relax
-                for i in range(mol_prep.GetNumAtoms()):
-                    uff.AddFixedPoint(i)
-                uff.Minimize(maxIts=max_iter)
-                minimized = True
+                logger.debug("  [PhysicsEngine] MMFF94 unavailable/failed, using UFF fallback")
+                try:
+                    # Fix heavy atoms, allow H to relax
+                    for i in range(mol_prep.GetNumAtoms()):
+                        uff.AddFixedPoint(i)
+                    uff.Minimize(maxIts=max_iter)
+                    minimized = True
+                except Exception as e:
+                    logger.debug(f"  [PhysicsEngine] UFF (fixed heavy atoms) failed: {e}")
 
         # If even UFF fails, do a full UFF optimization (no fixed atoms) for atoms with bad geometry
         if not minimized:
             uff_full = AllChem.UFFGetMoleculeForceField(mol_h)
             if uff_full:
                 logger.debug("  [PhysicsEngine] Full UFF minimization (no fixed atoms)")
-                uff_full.Minimize(maxIts=max_iter * 2)
+                try:
+                    uff_full.Minimize(maxIts=max_iter * 2)
+                except Exception as e:
+                    logger.warning(f"  [PhysicsEngine] Full UFF minimization failed: {e}")
+                    return pos.clone()
 
         # Extract only heavy atoms back to tensor (matching input pos)
         conf_h = mol_h.GetConformer()
