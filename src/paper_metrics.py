@@ -4,7 +4,7 @@ Generate paper-ready benchmark tables:
 1) Main table (SR@2, SR@5, median RMSD, crash rate, fallback rate)
 2) Stability table (seed variance + 95% CI)
 3) Efficiency table (same-time-budget SR@2)
-4) Ranking table (Spearman(logZ, -RMSD) + top-k hit rate)
+4) Ranking table (logZ and composite ranking proxies vs RMSD)
 
 Usage example:
 python src/paper_metrics.py \
@@ -99,13 +99,21 @@ def read_run(method: str, csv_path: str) -> pd.DataFrame:
     df["seed"] = pd.to_numeric(df["seed"], errors="coerce").fillna(0).astype(int)
     df["pdb_id"] = df["pdb_id"].astype(str).str.lower()
 
-    for col in ["best_rmsd", "time_sec", "log_Z_final", "mmff_fallback_rate"]:
+    for col in [
+        "best_rmsd", "time_sec", "log_Z_final", "mmff_fallback_rate",
+        "rank_proxy_final", "rank_spearman", "rank_top1_hit", "rank_top3_hit", "ranked_rmsd",
+    ]:
         if col not in df.columns:
             df[col] = np.nan
     df["best_rmsd"] = pd.to_numeric(df["best_rmsd"], errors="coerce")
     df["time_sec"] = pd.to_numeric(df["time_sec"], errors="coerce").fillna(0.0)
     df["log_Z_final"] = pd.to_numeric(df["log_Z_final"], errors="coerce")
     df["mmff_fallback_rate"] = pd.to_numeric(df["mmff_fallback_rate"], errors="coerce")
+    df["rank_proxy_final"] = pd.to_numeric(df["rank_proxy_final"], errors="coerce")
+    df["rank_spearman"] = pd.to_numeric(df["rank_spearman"], errors="coerce")
+    df["rank_top1_hit"] = pd.to_numeric(df["rank_top1_hit"], errors="coerce")
+    df["rank_top3_hit"] = pd.to_numeric(df["rank_top3_hit"], errors="coerce")
+    df["ranked_rmsd"] = pd.to_numeric(df["ranked_rmsd"], errors="coerce")
     return df
 
 
@@ -245,51 +253,78 @@ def efficiency_same_budget(df_rows: pd.DataFrame, expected_targets: List[str]) -
     return pd.DataFrame(out)
 
 
+def _safe_spearman(a: pd.Series, b: pd.Series) -> float:
+    ab = pd.DataFrame({"a": a, "b": b}).dropna()
+    if len(ab) < 2:
+        return float("nan")
+    ra = ab["a"].rank(method="average")
+    rb = ab["b"].rank(method="average")
+    if ra.nunique() < 2 or rb.nunique() < 2:
+        return float("nan")
+    return float(ra.corr(rb))
+
+
+def _topk_hit_rates(g: pd.DataFrame, score_col: str, rmsd_col: str = "best_rmsd") -> Tuple[int, float, float]:
+    hit1 = 0
+    hit2 = 0
+    n_t = 0
+    for _, gt in g.groupby("pdb_id"):
+        gt = gt[gt[score_col].notna() & gt[rmsd_col].notna()].copy()
+        if gt["seed"].nunique() < 2 or gt.empty:
+            continue
+        n_t += 1
+        idx_pick = gt[score_col].idxmax()
+        ranks = gt[rmsd_col].rank(method="min", ascending=True)
+        r = float(ranks.loc[idx_pick])
+        if r <= 1:
+            hit1 += 1
+        if r <= 2:
+            hit2 += 1
+    return n_t, (hit1 / n_t) if n_t else float("nan"), (hit2 / n_t) if n_t else float("nan")
+
+
 def ranking_table(df_rows: pd.DataFrame, expected_targets: List[str]) -> pd.DataFrame:
     expected = set(expected_targets)
     rows = []
     for method, g in df_rows.groupby("method", sort=False):
         g = g[g["pdb_id"].isin(expected)].copy()
-        g = g[g["log_Z_final"].notna() & g["best_rmsd"].notna()].copy()
-        if g.empty:
+        g_rmsd = g[g["best_rmsd"].notna()].copy()
+        if g_rmsd.empty:
             rows.append({
                 "method": method,
                 "n_points": 0,
                 "spearman_logZ_vs_negRMSD": float("nan"),
-                "n_targets_ranked": 0,
-                "top1_hit_rate": float("nan"),
-                "top2_hit_rate": float("nan"),
+                "spearman_rankProxy_vs_negRMSD": float("nan"),
+                "n_targets_ranked_logZ": 0,
+                "top1_hit_rate_logZ": float("nan"),
+                "top2_hit_rate_logZ": float("nan"),
+                "n_targets_ranked_rankProxy": 0,
+                "top1_hit_rate_rankProxy": float("nan"),
+                "top2_hit_rate_rankProxy": float("nan"),
+                "rank_top1_hit_direct": float("nan"),
+                "rank_top3_hit_direct": float("nan"),
+                "ranked_rmsd_mean": float("nan"),
             })
             continue
 
-        # Spearman(logZ, -RMSD): higher is better.
-        rx = g["log_Z_final"].rank(method="average")
-        ry = (-g["best_rmsd"]).rank(method="average")
-        rho = float(rx.corr(ry))
-
-        # Ranking quality across seeds for each target:
-        # choose seed with highest logZ, check if it matches best RMSD (top-1 / top-2).
-        hit1 = 0
-        hit2 = 0
-        n_t = 0
-        for target, gt in g.groupby("pdb_id"):
-            if gt["seed"].nunique() < 2:
-                continue
-            n_t += 1
-            idx_pick = gt["log_Z_final"].idxmax()
-            ranks = gt["best_rmsd"].rank(method="min", ascending=True)
-            r = float(ranks.loc[idx_pick])
-            if r <= 1:
-                hit1 += 1
-            if r <= 2:
-                hit2 += 1
+        rho_logz = _safe_spearman(g_rmsd["log_Z_final"], -g_rmsd["best_rmsd"])
+        rho_proxy = _safe_spearman(g_rmsd["rank_proxy_final"], -g_rmsd["best_rmsd"])
+        n_logz, h1_logz, h2_logz = _topk_hit_rates(g_rmsd, "log_Z_final")
+        n_proxy, h1_proxy, h2_proxy = _topk_hit_rates(g_rmsd, "rank_proxy_final")
         rows.append({
             "method": method,
-            "n_points": int(len(g)),
-            "spearman_logZ_vs_negRMSD": rho,
-            "n_targets_ranked": n_t,
-            "top1_hit_rate": (hit1 / n_t) if n_t else float("nan"),
-            "top2_hit_rate": (hit2 / n_t) if n_t else float("nan"),
+            "n_points": int(len(g_rmsd)),
+            "spearman_logZ_vs_negRMSD": rho_logz,
+            "spearman_rankProxy_vs_negRMSD": rho_proxy,
+            "n_targets_ranked_logZ": n_logz,
+            "top1_hit_rate_logZ": h1_logz,
+            "top2_hit_rate_logZ": h2_logz,
+            "n_targets_ranked_rankProxy": n_proxy,
+            "top1_hit_rate_rankProxy": h1_proxy,
+            "top2_hit_rate_rankProxy": h2_proxy,
+            "rank_top1_hit_direct": float(g_rmsd["rank_top1_hit"].dropna().mean()) if g_rmsd["rank_top1_hit"].notna().any() else float("nan"),
+            "rank_top3_hit_direct": float(g_rmsd["rank_top3_hit"].dropna().mean()) if g_rmsd["rank_top3_hit"].notna().any() else float("nan"),
+            "ranked_rmsd_mean": float(g_rmsd["ranked_rmsd"].dropna().mean()) if g_rmsd["ranked_rmsd"].notna().any() else float("nan"),
         })
     return pd.DataFrame(rows)
 

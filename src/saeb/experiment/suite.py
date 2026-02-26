@@ -90,6 +90,31 @@ def directed_noise(shape, pocket_anchor, f_phys, T_curr, dt, step_frac, pos_L, d
     return directed
 
 
+def _stable_zscore(values: torch.Tensor) -> torch.Tensor:
+    """Numerically stable z-score used by ranking heuristics."""
+    if values.numel() <= 1:
+        return torch.zeros_like(values)
+    v = values.float()
+    std = v.std(unbiased=False)
+    if torch.isnan(std) or std < 1e-8:
+        return torch.zeros_like(v)
+    return (v - v.mean()) / (std + 1e-8)
+
+
+def _spearman_from_tensors(x: torch.Tensor, y: torch.Tensor) -> float:
+    """Rank correlation helper that avoids NaN warnings on constant vectors."""
+    if x.numel() <= 1 or y.numel() <= 1:
+        return float("nan")
+    rx = x.float().argsort().argsort().float()
+    ry = y.float().argsort().argsort().float()
+    sx = rx.std(unbiased=False).item()
+    sy = ry.std(unbiased=False).item()
+    if sx < 1e-8 or sy < 1e-8:
+        return float("nan")
+    corr = torch.corrcoef(torch.stack([rx, ry]))[0, 1].item()
+    return float(corr)
+
+
 class BeamDocking:
     """
     Beam Search Docking v8.1 — 修復版本
@@ -780,6 +805,7 @@ class SAEBFlowRefinement:
                q_L: torch.Tensor,
                pocket_anchor: torch.Tensor, # (3,)
                device,
+               pos_native: torch.Tensor = None,
                mol_template=None,
                steps: int = 200,
                allow_flexible_receptor: bool = False,
@@ -837,6 +863,7 @@ class SAEBFlowRefinement:
                 x_L=x_L, q_L=q_L,
                 pocket_anchor=pocket_anchor,
                 device=device, mol_template=mol_template,
+                pos_native=pos_native,
                 steps=srpg_steps,
                 use_fksmc=use_fksmc, use_socm_twist=use_socm_twist,
                 twist_beta=twist_beta, twist_clamp=twist_clamp,
@@ -916,7 +943,13 @@ class SAEBFlowRefinement:
         best_E = torch.full((B,), float('inf'), device=device)
         best_pos = pos_L.detach().clone()
         dt = 1.0 / steps
-        min_adaptive_stop_step = max(40, int(0.4 * steps))
+        min_step_frac = float(getattr(self.config, "adaptive_min_step_frac", 0.65))
+        patience_frac = float(getattr(self.config, "adaptive_patience_frac", 0.12))
+        min_adaptive_stop_step = min(steps - 1, max(80, int(min_step_frac * steps)))
+        adaptive_patience = max(20, int(patience_frac * steps))
+        plateau_window = max(20, int(0.10 * steps))
+        best_avg_energy = float("inf")
+        best_energy_step = 0
 
         # v10.1: Initialize FK-SMC with annealed beta and rejuvenation
         fksmc = FeynmanKacSMC(
@@ -1029,12 +1062,28 @@ class SAEBFlowRefinement:
             
             avg_e = energy_clamped.mean().item()
             history_E.append(avg_e)
+            if avg_e + adaptive_stop_thresh < best_avg_energy:
+                best_avg_energy = avg_e
+                best_energy_step = step
             
-            # v8.0: Adaptive Early Stopping (TTC Scaling)
-            if step >= min_adaptive_stop_step and len(history_E) > 20:
-                imp = abs(history_E[-1] - history_E[-15])
-                if imp < adaptive_stop_thresh:
-                    logger.info(f"  [Refine] Adaptive stop at step {step} (imp={imp:.4f})")
+            # Adaptive stop v11: require long plateau + patience to avoid premature convergence.
+            if step >= min_adaptive_stop_step and len(history_E) >= plateau_window:
+                recent = np.array(history_E[-plateau_window:], dtype=np.float32)
+                lookback = min(10, plateau_window - 1)
+                imp_short = abs(float(recent[-1] - recent[-1 - lookback]))
+                imp_long = abs(float(recent[-1] - recent[0]))
+                rel_std = float(recent.std() / max(1.0, abs(float(recent.mean()))))
+                stalled_steps = step - best_energy_step
+                if (
+                    imp_short < adaptive_stop_thresh and
+                    imp_long < (2.5 * adaptive_stop_thresh) and
+                    rel_std < 0.01 and
+                    stalled_steps >= adaptive_patience
+                ):
+                    logger.info(
+                        f"  [Refine] Adaptive stop at step {step} "
+                        f"(imp_short={imp_short:.4f}, imp_long={imp_long:.4f}, stalled={stalled_steps})"
+                    )
                     break
             
             # ============================================================
@@ -1090,19 +1139,70 @@ class SAEBFlowRefinement:
         
         # ── Final MMFF Polish & Scoring (Bug 29 Fix) ────────────────────────
         final_scores = []
+        rank_signal = (
+            log_weights.detach().clone()
+            if (use_fksmc and log_weights is not None and log_weights.numel() == B)
+            else torch.zeros(B, device=device)
+        )
         if mol_template is not None:
-            logger.info("  [Refine] Performing final MMFF94 polish and scoring candidates...")
+            logger.info("  [Refine] Performing final MMFF94 polish and second-stage rerank...")
+            with torch.no_grad():
+                pre_inter, _, _, _ = self.phys.compute_energy(
+                    best_pos, pos_P_active, q_L_b, q_P_b, x_L_b, x_P_b, 1.0
+                )
+                pre_clash = self.phys.calculate_internal_geometry_score(best_pos)
+                pre_rank = (
+                    0.55 * _stable_zscore(rank_signal) -
+                    0.30 * _stable_zscore(pre_inter) -
+                    0.15 * _stable_zscore(torch.log1p(torch.clamp(pre_clash, min=0.0)))
+                )
+                polish_topk = int(getattr(self.config, "final_mmff_topk", 5))
+                if polish_topk <= 0:
+                    polish_topk = B
+                # Polish a wider candidate pool, then rerank again on final scores.
+                polish_mult = max(1, int(getattr(self.config, "rerank_polish_mult", 2)))
+                polish_k = max(1, min(B, polish_topk * polish_mult))
+                polish_indices = pre_rank.topk(polish_k).indices.tolist()
+                polish_set = set(polish_indices)
+            mmff_iter = int(getattr(self.config, "final_mmff_max_iter", 2000))
+            mmff_iter = max(50, mmff_iter)
+            for i in polish_indices:
+                best_pos[i] = self.phys.minimize_with_mmff(mol_template, best_pos[i], max_iter=mmff_iter)
             for i in range(B):
-                # 1. Polish: P0-3 Fix — increase max_iter to 2000 for proper bond angle convergence
-                best_pos[i] = self.phys.minimize_with_mmff(mol_template, best_pos[i], max_iter=2000)
-                # 2. Score (Hybrid: MMFF Internal + SA-Flow Interaction)
-                mmff_e = self.phys.get_mmff_energy(mol_template, best_pos[i])
+                mmff_e = self.phys.get_mmff_energy(mol_template, best_pos[i]) if i in polish_set else 0.0
                 inter_e, _, _, _ = self.phys.compute_energy(
                     best_pos[i:i+1], pos_P_active[i:i+1], q_L_b[i:i+1], q_P_b[i:i+1], x_L_b[i:i+1], x_P_b[i:i+1], 1.0
                 )
                 final_scores.append(mmff_e + inter_e.item())
         else:
-            final_scores = best_E.tolist()
+            inter_only, _, _, _ = self.phys.compute_energy(
+                best_pos, pos_P_active, q_L_b, q_P_b, x_L_b, x_P_b, 1.0
+            )
+            final_scores = inter_only.detach().tolist()
+
+        final_energy_t = torch.tensor(final_scores, device=device, dtype=torch.float32)
+        clash_final = self.phys.calculate_internal_geometry_score(best_pos).float()
+        rank_scores = (
+            0.55 * _stable_zscore(rank_signal) -
+            0.30 * _stable_zscore(final_energy_t) -
+            0.15 * _stable_zscore(torch.log1p(torch.clamp(clash_final, min=0.0)))
+        )
+        rank_order = torch.argsort(rank_scores, descending=True)
+        rank_proxy_final = float(rank_scores[rank_order[0]].item()) if rank_order.numel() else float("nan")
+        rank_spearman = float("nan")
+        rank_top1_hit = float("nan")
+        rank_top3_hit = float("nan")
+        ranked_rmsd = float("nan")
+        if pos_native is not None and pos_native.numel() > 0:
+            rmsd_all = kabsch_rmsd(best_pos, pos_native)
+            ranked_rmsd = float(rmsd_all[rank_order[0]].item())
+            oracle_order = torch.argsort(rmsd_all)
+            topk = min(3, B)
+            oracle_topk = set(oracle_order[:topk].tolist())
+            picked_topk = [int(v) for v in rank_order[:topk].tolist()]
+            rank_top1_hit = float(int(rank_order[0].item()) == int(oracle_order[0].item()))
+            rank_top3_hit = float(any(v in oracle_topk for v in picked_topk))
+            rank_spearman = _spearman_from_tensors(rank_scores, -rmsd_all)
 
         return {
             "refined_poses": best_pos,
@@ -1113,6 +1213,12 @@ class SAEBFlowRefinement:
             "log_Z_final": log_Z_history[-1] if log_Z_history else 0.0,
             "ess_min": round(min(ess_trajectory), 4) if ess_trajectory else 1.0,
             "resample_count": resample_count,
+            # Claim-3 ranking diagnostics
+            "rank_proxy_final": rank_proxy_final,
+            "rank_spearman": rank_spearman,
+            "rank_top1_hit": rank_top1_hit,
+            "rank_top3_hit": rank_top3_hit,
+            "ranked_rmsd": ranked_rmsd,
         }
 
     def _call_smina_score(self, protein_pdb, ligand_sdf):
@@ -1191,6 +1297,7 @@ class SAEBFlowRefinement:
                 q_L=q_L_native,
                 pocket_anchor=torch.zeros(3, device=device),
                 device=device,
+                pos_native=pos_native,
                 mol_template=lig_template,
                 steps=self.config.steps,
                 adaptive_stop_thresh=getattr(self.config, "adaptive_stop_thresh", 0.05),
@@ -1240,6 +1347,11 @@ class SAEBFlowRefinement:
                 "ess_min":         refine_out.get("ess_min", float("nan")),
                 "resample_count":  refine_out.get("resample_count", 0),
                 "mmff_fallback_rate": mmff_fallback_rate,
+                "rank_proxy_final": refine_out.get("rank_proxy_final", float("nan")),
+                "rank_spearman": refine_out.get("rank_spearman", float("nan")),
+                "rank_top1_hit": refine_out.get("rank_top1_hit", float("nan")),
+                "rank_top3_hit": refine_out.get("rank_top3_hit", float("nan")),
+                "ranked_rmsd": refine_out.get("ranked_rmsd", float("nan")),
             }
 
         # ── Ligand ensemble initialisation ──────────────────────────────────
@@ -1859,4 +1971,9 @@ class SAEBFlowRefinement:
             "ess_min":         float("nan"),
             "resample_count":  0,
             "mmff_fallback_rate": mmff_fallback_rate,
+            "rank_proxy_final": float("nan"),
+            "rank_spearman": float("nan"),
+            "rank_top1_hit": float("nan"),
+            "rank_top3_hit": float("nan"),
+            "ranked_rmsd": float("nan"),
         }

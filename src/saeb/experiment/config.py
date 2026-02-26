@@ -66,6 +66,9 @@ class SimulationConfig:
     final_mmff_max_iter: int = 2000
     no_pose_dump: bool = False
     adaptive_stop_thresh: float = 0.05
+    adaptive_min_step_frac: float = 0.65
+    adaptive_patience_frac: float = 0.12
+    rerank_polish_mult: int = 2
     quiet: bool = False
     
     def to_dict(self):

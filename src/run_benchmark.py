@@ -109,6 +109,9 @@ def run_single_target(pdb_id, device_id, seed, args):
         final_mmff_max_iter=getattr(args, "final_mmff_max_iter", 2000),
         no_pose_dump=getattr(args, "no_pose_dump", False),
         adaptive_stop_thresh=getattr(args, "adaptive_stop_thresh", 0.05),
+        adaptive_min_step_frac=getattr(args, "adaptive_min_step_frac", 0.65),
+        adaptive_patience_frac=getattr(args, "adaptive_patience_frac", 0.12),
+        rerank_polish_mult=getattr(args, "rerank_polish_mult", 2),
         quiet=getattr(args, "quiet", False),
     )
 
@@ -186,6 +189,12 @@ def main():
                         help="Skip saving per-target best PDB to results/")
     parser.add_argument("--adaptive_stop_thresh", type=float, default=0.05,
                         help="Adaptive early-stop threshold in refine() (lower = less early stop)")
+    parser.add_argument("--adaptive_min_step_frac", type=float, default=0.65,
+                        help="Minimum completed-step fraction before adaptive stop can trigger")
+    parser.add_argument("--adaptive_patience_frac", type=float, default=0.12,
+                        help="No-improvement patience fraction required for adaptive stop")
+    parser.add_argument("--rerank_polish_mult", type=int, default=2,
+                        help="Second-stage rerank: polish multiplier over final_mmff_topk")
     parser.add_argument("--quiet", action="store_true",
                         help="Reduce terminal output noise (warnings/errors only)")
     # Output
@@ -224,6 +233,15 @@ def main():
     if args.adaptive_stop_thresh < 0.0:
         logger.warning(f"adaptive_stop_thresh={args.adaptive_stop_thresh} invalid; clamping to 0.0.")
         args.adaptive_stop_thresh = 0.0
+    if args.adaptive_min_step_frac < 0.1 or args.adaptive_min_step_frac > 0.95:
+        logger.warning(f"adaptive_min_step_frac={args.adaptive_min_step_frac} out of range; clamping to [0.1,0.95].")
+        args.adaptive_min_step_frac = min(0.95, max(0.1, args.adaptive_min_step_frac))
+    if args.adaptive_patience_frac < 0.02 or args.adaptive_patience_frac > 0.5:
+        logger.warning(f"adaptive_patience_frac={args.adaptive_patience_frac} out of range; clamping to [0.02,0.5].")
+        args.adaptive_patience_frac = min(0.5, max(0.02, args.adaptive_patience_frac))
+    if args.rerank_polish_mult < 1:
+        logger.warning(f"rerank_polish_mult={args.rerank_polish_mult} invalid; clamping to 1.")
+        args.rerank_polish_mult = 1
 
     if args.high_fidelity:
         logger.info(f"High-fidelity mode: steps={args.steps}, B={args.batch_size}")
@@ -258,6 +276,9 @@ def main():
                 f"no_aggregate_figures={args.no_aggregate_figures} | "
                 f"final_mmff_topk={args.final_mmff_topk} | final_mmff_max_iter={args.final_mmff_max_iter} | "
                 f"no_pose_dump={args.no_pose_dump} | adaptive_stop_thresh={args.adaptive_stop_thresh:.4f} | "
+                f"adaptive_min_step_frac={args.adaptive_min_step_frac:.2f} | "
+                f"adaptive_patience_frac={args.adaptive_patience_frac:.2f} | "
+                f"rerank_polish_mult={args.rerank_polish_mult} | "
                 f"quiet={args.quiet}")
 
     results_summary = []
@@ -320,6 +341,7 @@ def main():
             "pdb_id", "seed",
             "best_rmsd", "mean_rmsd", "final_energy",
             "log_Z_final", "ess_min", "resample_count", "pb_valid_frac", "mmff_fallback_rate",
+            "rank_proxy_final", "rank_spearman", "rank_top1_hit", "rank_top3_hit", "ranked_rmsd",
             "steps", "time_sec",
         ]
         writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
@@ -327,7 +349,10 @@ def main():
         for r in successful:
             row = r["results"].copy()
             row["seed"] = r.get("seed", row.get("seed", 0))
-            for k in ("log_Z_final", "ess_min", "resample_count", "pb_valid_frac", "mmff_fallback_rate"):
+            for k in (
+                "log_Z_final", "ess_min", "resample_count", "pb_valid_frac", "mmff_fallback_rate",
+                "rank_proxy_final", "rank_spearman", "rank_top1_hit", "rank_top3_hit", "ranked_rmsd",
+            ):
                 row.setdefault(k, "")
             row.setdefault("time_sec", 0)
             writer.writerow(row)

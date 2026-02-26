@@ -56,6 +56,12 @@ def main():
                         help="Skip writing best pose PDB files")
     parser.add_argument("--adaptive_stop_thresh", type=float, default=0.05,
                         help="Adaptive early-stop threshold (lower = run longer)")
+    parser.add_argument("--adaptive_min_step_frac", type=float, default=0.65,
+                        help="Minimum step fraction before adaptive stop can trigger")
+    parser.add_argument("--adaptive_patience_frac", type=float, default=0.12,
+                        help="Patience fraction for adaptive stop")
+    parser.add_argument("--rerank_polish_mult", type=int, default=2,
+                        help="Second-stage rerank polish multiplier")
     parser.add_argument("--quiet", action="store_true",
                         help="Reduce terminal output noise")
     parser.add_argument("--output_dir", type=str, default="results/astex10_fksmc_socm")
@@ -91,6 +97,12 @@ def main():
         str(args.final_mmff_max_iter),
         "--adaptive_stop_thresh",
         str(args.adaptive_stop_thresh),
+        "--adaptive_min_step_frac",
+        str(args.adaptive_min_step_frac),
+        "--adaptive_patience_frac",
+        str(args.adaptive_patience_frac),
+        "--rerank_polish_mult",
+        str(args.rerank_polish_mult),
     ]
 
     if args.pdb_dir:
