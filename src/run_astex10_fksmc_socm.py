@@ -56,6 +56,8 @@ def main():
                         help="Skip writing best pose PDB files")
     parser.add_argument("--adaptive_stop_thresh", type=float, default=0.05,
                         help="Adaptive early-stop threshold (lower = run longer)")
+    parser.add_argument("--quiet", action="store_true",
+                        help="Reduce terminal output noise")
     parser.add_argument("--output_dir", type=str, default="results/astex10_fksmc_socm")
     args = parser.parse_args()
 
@@ -113,6 +115,8 @@ def main():
         cmd.append("--no_aggregate_figures")
     if args.no_pose_dump:
         cmd.append("--no_pose_dump")
+    if args.quiet:
+        cmd.append("--quiet")
 
     print("Launching:", " ".join(cmd))
     result = subprocess.run(cmd)

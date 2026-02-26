@@ -68,6 +68,16 @@ DIFFDOCK_TIMESPLIT_362 = [
     "6d3x","6gj8","6mo2",
 ]
 
+def configure_runtime_logging(quiet: bool = False):
+    level = logging.WARNING if quiet else logging.INFO
+    logging.basicConfig(level=level, format="%(asctime)s - %(levelname)s - %(message)s", force=True)
+    if quiet:
+        try:
+            from rdkit import RDLogger
+            RDLogger.DisableLog("rdApp.*")
+        except Exception:
+            pass
+
 
 def run_single_target(pdb_id, device_id, seed, args):
     """Worker function for single-target run."""
@@ -99,6 +109,7 @@ def run_single_target(pdb_id, device_id, seed, args):
         final_mmff_max_iter=getattr(args, "final_mmff_max_iter", 2000),
         no_pose_dump=getattr(args, "no_pose_dump", False),
         adaptive_stop_thresh=getattr(args, "adaptive_stop_thresh", 0.05),
+        quiet=getattr(args, "quiet", False),
     )
 
     t0 = time.time()
@@ -120,9 +131,8 @@ def worker(q_in, q_out, gpu_id, args_copy):
     Sets CUDA_VISIBLE_DEVICES so this process only sees its own GPU.
     """
     import os
-    import logging
     # Spawned processes don't inherit logging config; must re-init.
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+    configure_runtime_logging(getattr(args_copy, "quiet", False))
     logger = logging.getLogger(f"Worker-G{gpu_id}")
     
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
@@ -176,6 +186,8 @@ def main():
                         help="Skip saving per-target best PDB to results/")
     parser.add_argument("--adaptive_stop_thresh", type=float, default=0.05,
                         help="Adaptive early-stop threshold in refine() (lower = less early stop)")
+    parser.add_argument("--quiet", action="store_true",
+                        help="Reduce terminal output noise (warnings/errors only)")
     # Output
     parser.add_argument("--output_dir", type=str, default="results", help="Output directory")
     # Comparison
@@ -197,7 +209,7 @@ def main():
         if args.steps == 300:   args.steps = 1000
         if args.batch_size == 16: args.batch_size = 128  # wider search
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+    configure_runtime_logging(args.quiet)
     logger = logging.getLogger("SAEB-Flow.CLI")
     os.makedirs(args.output_dir, exist_ok=True)
     if args.mmff_snap_fraction < 0.0 or args.mmff_snap_fraction > 1.0:
@@ -245,7 +257,8 @@ def main():
                 f"snap_frac={args.mmff_snap_fraction:.2f} | no_target_plots={args.no_target_plots} | "
                 f"no_aggregate_figures={args.no_aggregate_figures} | "
                 f"final_mmff_topk={args.final_mmff_topk} | final_mmff_max_iter={args.final_mmff_max_iter} | "
-                f"no_pose_dump={args.no_pose_dump} | adaptive_stop_thresh={args.adaptive_stop_thresh:.4f}")
+                f"no_pose_dump={args.no_pose_dump} | adaptive_stop_thresh={args.adaptive_stop_thresh:.4f} | "
+                f"quiet={args.quiet}")
 
     results_summary = []
 

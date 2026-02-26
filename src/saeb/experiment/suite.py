@@ -1217,12 +1217,13 @@ class SAEBFlowRefinement:
             attempts = max(1, int(mmff_stats.get("attempts", 0)))
             mmff_fallback_rate = float(mmff_stats.get("fallback_used", 0)) / attempts
 
-            print(f"\n{'='*55}")
-            print(f" {self.config.pdb_id:8s}  best={best_rmsd:.2f}A  "
-                  f"mean={final_rmsd_all.mean():.2f}A  E={final_energy:.1f}")
-            if history_E:
-                print(self.visualizer.interpreter.interpret_energy_trend(history_E))
-            print(f"{'='*55}\n")
+            if not getattr(self.config, "quiet", False):
+                print(f"\n{'='*55}")
+                print(f" {self.config.pdb_id:8s}  best={best_rmsd:.2f}A  "
+                      f"mean={final_rmsd_all.mean():.2f}A  E={final_energy:.1f}")
+                if history_E:
+                    print(self.visualizer.interpreter.interpret_energy_trend(history_E))
+                print(f"{'='*55}\n")
 
             if not getattr(self.config, "no_pose_dump", False):
                 os.makedirs("results", exist_ok=True)
@@ -1818,13 +1819,14 @@ class SAEBFlowRefinement:
             best_rmsd  = final_rmsd.min().item()
             best_pos   = pos_L_final[0].detach().cpu().numpy()
 
-        print(f"\n{'='*55}")
         final_energy = history_E[-1] if history_E else float("nan")
-        print(f" {self.config.pdb_id:8s}  best={best_rmsd:.2f}A  "
-              f"mean={final_rmsd.mean():.2f}A  E={final_energy:.1f}")
-        if history_E:
-            print(self.visualizer.interpreter.interpret_energy_trend(history_E))
-        print(f"{'='*55}\n")
+        if not getattr(self.config, "quiet", False):
+            print(f"\n{'='*55}")
+            print(f" {self.config.pdb_id:8s}  best={best_rmsd:.2f}A  "
+                  f"mean={final_rmsd.mean():.2f}A  E={final_energy:.1f}")
+            if history_E:
+                print(self.visualizer.interpreter.interpret_energy_trend(history_E))
+            print(f"{'='*55}\n")
 
         # Save best pose
         if not getattr(self.config, "no_pose_dump", False):
