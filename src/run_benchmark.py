@@ -354,7 +354,7 @@ def main():
             "pdb_id", "seed",
             "best_rmsd", "oracle_best_rmsd", "mean_rmsd", "final_energy",
             "log_Z_final", "ess_min", "resample_count", "pb_valid_frac", "mmff_fallback_rate",
-            "rank_proxy_final", "rank_spearman", "rank_top1_hit", "rank_top3_hit", "ranked_rmsd", "selection_score",
+            "rank_proxy_final", "rank_spearman", "rank_top1_hit", "rank_top3_hit", "ranked_rmsd", "selection_score", "mmff_disabled",
             "qm_candidate_dir",
             "steps", "time_sec",
         ]
@@ -365,7 +365,7 @@ def main():
             row["seed"] = r.get("seed", row.get("seed", 0))
             for k in (
                 "log_Z_final", "ess_min", "resample_count", "pb_valid_frac", "mmff_fallback_rate",
-                "rank_proxy_final", "rank_spearman", "rank_top1_hit", "rank_top3_hit", "ranked_rmsd", "qm_candidate_dir",
+                "rank_proxy_final", "rank_spearman", "rank_top1_hit", "rank_top3_hit", "ranked_rmsd", "mmff_disabled", "qm_candidate_dir",
             ):
                 row.setdefault(k, "")
             row.setdefault("selection_score", getattr(args, "selection_score", "clash"))

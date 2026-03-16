@@ -1349,6 +1349,7 @@ class SAEBFlowRefinement:
             if (use_fksmc and log_weights is not None and log_weights.numel() == B)
             else torch.zeros(B, device=device)
         )
+        mmff_disabled = False
         if mol_template is not None:
             logger.info("  [Refine] Performing final MMFF94 polish and second-stage rerank...")
             with torch.no_grad():
@@ -1371,6 +1372,7 @@ class SAEBFlowRefinement:
                 polish_set = set(polish_indices)
             mmff_iter = int(getattr(self.config, "final_mmff_max_iter", 2000))
             mmff_iter = max(50, mmff_iter)
+            mmff_stats_before = self.phys.get_mmff_stats()
             for i in polish_indices:
                 best_pos[i] = self.phys.minimize_with_mmff(mol_template, best_pos[i], max_iter=mmff_iter)
             for i in range(B):
@@ -1380,6 +1382,19 @@ class SAEBFlowRefinement:
                     best_pos[i:i+1], pos_P_active[i:i+1], q_L_b[i:i+1], q_P_b[i:i+1], x_L_b[i:i+1], x_P_b[i:i+1], 1.0
                 )
                 final_scores.append(_safe_scalar_energy(mmff_e + inter_e.item()))
+            mmff_stats_after = self.phys.get_mmff_stats()
+            outlier_delta = int(mmff_stats_after.get("energy_outliers", 0)) - int(mmff_stats_before.get("energy_outliers", 0))
+            outlier_limit = max(3, math.ceil(0.5 * max(1, len(polish_indices))))
+            if outlier_delta >= outlier_limit:
+                mmff_disabled = True
+                logger.warning(
+                    "  [Refine] Excessive MMFF energy outliers detected "
+                    f"({outlier_delta}/{max(1, len(polish_indices))}); falling back to interaction-only final scoring."
+                )
+                inter_only, _, _, _ = self.phys.compute_energy(
+                    best_pos, pos_P_active, q_L_b, q_P_b, x_L_b, x_P_b, 1.0
+                )
+                final_scores = [_safe_scalar_energy(float(v)) for v in inter_only.detach().tolist()]
         else:
             inter_only, _, _, _ = self.phys.compute_energy(
                 best_pos, pos_P_active, q_L_b, q_P_b, x_L_b, x_P_b, 1.0
@@ -1456,6 +1471,7 @@ class SAEBFlowRefinement:
             "selected_idx": int(rank_order[0].item()) if rank_order.numel() else 0,
             "selection_score": selection_score_name,
             "candidate_rows": candidate_rows,
+            "mmff_disabled": mmff_disabled,
         }
 
     def _call_smina_score(self, protein_pdb, ligand_sdf):
@@ -1615,6 +1631,7 @@ class SAEBFlowRefinement:
                 "rank_top3_hit": refine_out.get("rank_top3_hit", float("nan")),
                 "ranked_rmsd": refine_out.get("ranked_rmsd", float("nan")),
                 "selection_score": refine_out.get("selection_score", getattr(self.config, "selection_score", "clash")),
+                "mmff_disabled": int(bool(refine_out.get("mmff_disabled", False))),
                 "qm_candidate_dir": qm_candidate_dir or "",
             }
 
@@ -2242,4 +2259,5 @@ class SAEBFlowRefinement:
             "rank_top3_hit": float("nan"),
             "ranked_rmsd": float("nan"),
             "selection_score": getattr(self.config, "selection_score", "clash"),
+            "mmff_disabled": 0,
         }

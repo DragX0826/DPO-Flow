@@ -35,6 +35,8 @@ class PhysicsEngine(nn.Module):
             "mmff_success": 0,
             "fallback_used": 0,
             "failed_all": 0,
+            "energy_calls": 0,
+            "energy_outliers": 0,
         }
 
     def get_mmff_stats(self):
@@ -313,10 +315,13 @@ class PhysicsEngine(nn.Module):
 
     def _sanitize_forcefield_energy(self, energy: float, source: str = "MMFF") -> float:
         """Reject non-finite or implausibly large force-field energies."""
+        self._mmff_stats["energy_calls"] += 1
         if not math.isfinite(energy):
+            self._mmff_stats["energy_outliers"] += 1
             logger.debug(f"  [PhysicsEngine] {source} energy non-finite; ignoring contribution.")
             return 0.0
         if abs(energy) > 5_000.0:
+            self._mmff_stats["energy_outliers"] += 1
             logger.warning(f"  [PhysicsEngine] {source} energy outlier ({energy:.2e}); ignoring contribution.")
             return 0.0
         return float(energy)
