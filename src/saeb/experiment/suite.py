@@ -91,6 +91,56 @@ def directed_noise(shape, pocket_anchor, f_phys, T_curr, dt, step_frac, pos_L, d
     return directed
 
 
+def _random_rotation_matrix(device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+    """Generate a proper random 3x3 rotation matrix."""
+    q, r = torch.linalg.qr(torch.randn(3, 3, device=device, dtype=dtype))
+    signs = torch.sign(torch.diag(r))
+    signs = torch.where(signs == 0, torch.ones_like(signs), signs)
+    q = q @ torch.diag(signs)
+    if torch.det(q) < 0:
+        q[:, 0] = -q[:, 0]
+    return q
+
+
+def _diversified_etkdg_pose(
+    base_pos: torch.Tensor,
+    pocket_anchor: torch.Tensor,
+    batch_idx: int,
+) -> torch.Tensor:
+    """
+    Diversify initial coverage with three pose families:
+    1) pocket-centered local starts,
+    2) radial-shell starts,
+    3) strongly rotated/oriented starts.
+    """
+    centered = base_pos - base_pos.mean(dim=0, keepdim=True)
+    rot = _random_rotation_matrix(base_pos.device, base_pos.dtype)
+    rotated = centered @ rot.T
+
+    mode = batch_idx % 3
+    shell_id = batch_idx // 3
+
+    direction = F.normalize(torch.randn(3, device=base_pos.device, dtype=base_pos.dtype), dim=0, eps=1e-8)
+    tangent = F.normalize(torch.randn(3, device=base_pos.device, dtype=base_pos.dtype), dim=0, eps=1e-8)
+
+    if mode == 0:
+        # Tight local starts preserve current behavior but with mild orientation diversity.
+        offset = direction * (0.6 + 0.25 * (shell_id % 3))
+        atom_noise = torch.randn_like(rotated) * 0.85
+    elif mode == 1:
+        # Radial-shell starts expand coverage around the pocket.
+        radius = 2.0 + 0.9 * (shell_id % 4)
+        offset = direction * radius + tangent * (0.4 * radius)
+        atom_noise = torch.randn_like(rotated) * 0.35
+    else:
+        # Orientation-bank starts emphasize rigid-body diversity over local noise.
+        radius = 3.5 + 1.1 * (shell_id % 4)
+        offset = direction * radius + tangent * (0.75 + 0.2 * (shell_id % 3))
+        atom_noise = torch.randn_like(rotated) * 0.12
+
+    return rotated + pocket_anchor.unsqueeze(0) + offset.unsqueeze(0) + atom_noise
+
+
 def _stable_zscore(values: torch.Tensor) -> torch.Tensor:
     """Numerically stable z-score used by ranking heuristics."""
     if values.numel() <= 1:
@@ -1116,16 +1166,11 @@ class SAEBFlowRefinement:
                     params.randomSeed = b  # Diverse starting conformations
                     if AllChem.EmbedMolecule(mol_embed, params) == 0:
                         conf = mol_embed.GetConformer()
-                        # Translate to pocket_anchor region
                         conf_pos = torch.tensor(conf.GetPositions(), device=device, dtype=torch.float32)
                         etkdg_pos = conf_pos[heavy_idx]
                         if etkdg_pos.shape[0] != N:
                             continue
-                        etkdg_center = etkdg_pos.mean(dim=0, keepdim=True)
-                        etkdg_pos = etkdg_pos - etkdg_center + pocket_anchor.unsqueeze(0)
-                        # Add small random offset to diversify starting positions
-                        etkdg_pos = etkdg_pos + torch.randn_like(etkdg_pos) * 1.5
-                        pos_L.data[b] = etkdg_pos
+                        pos_L.data[b] = _diversified_etkdg_pose(etkdg_pos, pocket_anchor, b)
                         logger.debug(f"  [Refine] ETKDG init for batch {b}")
             except Exception as e:
                 logger.debug(f"  [Refine] ETKDG init failed: {e} — using original init")
