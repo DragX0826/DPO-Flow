@@ -1324,7 +1324,13 @@ class SAEBFlowRefinement:
                 best_pos = pos_L_final[0].detach().cpu().numpy()
 
             history_E = refine_out.get("history_E", [])
-            final_energy = float(history_E[-1]) if history_E else float("nan")
+            final_energies = refine_out.get("final_energies", None)
+            if isinstance(final_energies, torch.Tensor) and final_energies.numel() > selected_idx:
+                final_energy = float(final_energies[selected_idx].item())
+            elif history_E:
+                final_energy = float(history_E[-1])
+            else:
+                final_energy = float("nan")
             mmff_stats = self.phys.get_mmff_stats()
             attempts = max(1, int(mmff_stats.get("attempts", 0)))
             mmff_fallback_rate = float(mmff_stats.get("fallback_used", 0)) / attempts
