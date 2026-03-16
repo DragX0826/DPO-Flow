@@ -115,6 +115,20 @@ def _spearman_from_tensors(x: torch.Tensor, y: torch.Tensor) -> float:
     return float(corr)
 
 
+def _build_selection_scores(rank_signal: torch.Tensor, final_energy_t: torch.Tensor, clash_final: torch.Tensor) -> dict[str, torch.Tensor]:
+    """Build alternate ranking signals for quick ablation of final-pose selection."""
+    logz_score = _stable_zscore(rank_signal)
+    energy_score = -_stable_zscore(final_energy_t)
+    clash_score = -_stable_zscore(torch.log1p(torch.clamp(clash_final, min=0.0)))
+    return {
+        "hybrid": 0.55 * logz_score + 0.30 * energy_score + 0.15 * clash_score,
+        "logz": logz_score,
+        "energy": energy_score,
+        "clash": clash_score,
+        "energy_clash": 0.7 * energy_score + 0.3 * clash_score,
+    }
+
+
 class BeamDocking:
     """
     Beam Search Docking v8.1 — 修復版本
@@ -1182,11 +1196,11 @@ class SAEBFlowRefinement:
 
         final_energy_t = torch.tensor(final_scores, device=device, dtype=torch.float32)
         clash_final = self.phys.calculate_internal_geometry_score(best_pos).float()
-        rank_scores = (
-            0.55 * _stable_zscore(rank_signal) -
-            0.30 * _stable_zscore(final_energy_t) -
-            0.15 * _stable_zscore(torch.log1p(torch.clamp(clash_final, min=0.0)))
-        )
+        selection_score_name = str(getattr(self.config, "selection_score", "hybrid")).strip().lower()
+        score_map = _build_selection_scores(rank_signal, final_energy_t, clash_final)
+        if selection_score_name not in score_map:
+            selection_score_name = "hybrid"
+        rank_scores = score_map[selection_score_name]
         rank_order = torch.argsort(rank_scores, descending=True)
         rank_proxy_final = float(rank_scores[rank_order[0]].item()) if rank_order.numel() else float("nan")
         rank_spearman = float("nan")
@@ -1220,6 +1234,7 @@ class SAEBFlowRefinement:
             "rank_top3_hit": rank_top3_hit,
             "ranked_rmsd": ranked_rmsd,
             "selected_idx": int(rank_order[0].item()) if rank_order.numel() else 0,
+            "selection_score": selection_score_name,
         }
 
     def _call_smina_score(self, protein_pdb, ligand_sdf):
@@ -1365,6 +1380,7 @@ class SAEBFlowRefinement:
                 "rank_top1_hit": refine_out.get("rank_top1_hit", float("nan")),
                 "rank_top3_hit": refine_out.get("rank_top3_hit", float("nan")),
                 "ranked_rmsd": refine_out.get("ranked_rmsd", float("nan")),
+                "selection_score": refine_out.get("selection_score", getattr(self.config, "selection_score", "hybrid")),
             }
 
         # ── Ligand ensemble initialisation ──────────────────────────────────
@@ -1990,4 +2006,5 @@ class SAEBFlowRefinement:
             "rank_top1_hit": float("nan"),
             "rank_top3_hit": float("nan"),
             "ranked_rmsd": float("nan"),
+            "selection_score": getattr(self.config, "selection_score", "hybrid"),
         }
