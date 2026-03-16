@@ -58,9 +58,11 @@ def ci95(values: Iterable[float]) -> float:
     return t * std / math.sqrt(n)
 
 
-def parse_targets(raw: str) -> List[str]:
-    if not raw:
+def parse_targets(raw: str | None) -> List[str]:
+    if raw is None:
         return ASTEX10_DEFAULT
+    if not raw:
+        return []
     return [x.strip().lower() for x in raw.split(",") if x.strip()]
 
 
@@ -100,12 +102,13 @@ def read_run(method: str, csv_path: str) -> pd.DataFrame:
     df["pdb_id"] = df["pdb_id"].astype(str).str.lower()
 
     for col in [
-        "best_rmsd", "time_sec", "log_Z_final", "mmff_fallback_rate",
+        "best_rmsd", "oracle_best_rmsd", "time_sec", "log_Z_final", "mmff_fallback_rate",
         "rank_proxy_final", "rank_spearman", "rank_top1_hit", "rank_top3_hit", "ranked_rmsd",
     ]:
         if col not in df.columns:
             df[col] = np.nan
     df["best_rmsd"] = pd.to_numeric(df["best_rmsd"], errors="coerce")
+    df["oracle_best_rmsd"] = pd.to_numeric(df["oracle_best_rmsd"], errors="coerce")
     df["time_sec"] = pd.to_numeric(df["time_sec"], errors="coerce").fillna(0.0)
     df["log_Z_final"] = pd.to_numeric(df["log_Z_final"], errors="coerce")
     df["mmff_fallback_rate"] = pd.to_numeric(df["mmff_fallback_rate"], errors="coerce")
@@ -121,7 +124,7 @@ def summarize_seed_metrics(df_rows: pd.DataFrame, expected_targets: List[str]) -
     expected = set(expected_targets)
     rows = []
     for (method, seed), g in df_rows.groupby(["method", "seed"], sort=False):
-        # Deduplicate target entries (e.g., repeated runs): keep the best RMSD row.
+        # Deduplicate target entries (e.g., repeated runs): keep the selected pose row with best RMSD.
         g2 = (
             g.sort_values(["best_rmsd", "time_sec"], na_position="last")
             .groupby("pdb_id", as_index=False)
@@ -137,6 +140,8 @@ def summarize_seed_metrics(df_rows: pd.DataFrame, expected_targets: List[str]) -
         sr5 = float((rmsd < 5.0).mean()) if len(rmsd) else float("nan")
         med = float(np.median(rmsd)) if len(rmsd) else float("nan")
         mean_r = float(np.mean(rmsd)) if len(rmsd) else float("nan")
+        oracle_rmsd = g2["oracle_best_rmsd"].dropna()
+        oracle_med = float(np.median(oracle_rmsd)) if len(oracle_rmsd) else float("nan")
         fallback = float(g2["mmff_fallback_rate"].dropna().mean()) if g2["mmff_fallback_rate"].notna().any() else float("nan")
         total_time = float(g2["time_sec"].sum())
 
@@ -149,6 +154,7 @@ def summarize_seed_metrics(df_rows: pd.DataFrame, expected_targets: List[str]) -
             "sr2": sr2,
             "sr5": sr5,
             "median_rmsd": med,
+            "oracle_median_rmsd": oracle_med,
             "mean_rmsd": mean_r,
             "fallback_rate": fallback,
             "total_time_sec": total_time,
@@ -175,6 +181,8 @@ def aggregate_with_ci(seed_df: pd.DataFrame) -> pd.DataFrame:
             "sr5_ci95": ci95(g["sr5"].tolist()),
             "median_rmsd": m("median_rmsd"),
             "median_rmsd_ci95": ci95(g["median_rmsd"].tolist()),
+            "oracle_median_rmsd": m("oracle_median_rmsd"),
+            "oracle_median_rmsd_ci95": ci95(g["oracle_median_rmsd"].tolist()),
             "crash_rate": m("crash_rate"),
             "crash_rate_ci95": ci95(g["crash_rate"].tolist()),
             "fallback_rate": m("fallback_rate"),
@@ -346,18 +354,15 @@ def main():
     parser = argparse.ArgumentParser(description="Compute paper tables from benchmark_results.csv files")
     parser.add_argument("--run", action="append", required=True,
                         help="Method input in form method_name=path_or_glob_to_csv_or_dir")
-    parser.add_argument("--targets", type=str, default=",".join(ASTEX10_DEFAULT),
-                        help="Expected targets (comma-separated). Default: Astex-10")
+    parser.add_argument("--targets", type=str, default=None,
+                        help="Expected targets (comma-separated). Default: infer from loaded runs")
     parser.add_argument("--exclude_targets", type=str, default="1glh",
                         help="Targets to exclude from metrics (comma-separated)")
     parser.add_argument("--output_dir", type=str, default="results/paper_tables")
     args = parser.parse_args()
 
-    expected = parse_targets(args.targets)
     exclude = set(parse_targets(args.exclude_targets))
-    expected_eval = [t for t in expected if t not in exclude]
-    if not expected_eval:
-        raise SystemExit("No evaluation targets left after exclusion.")
+    expected = parse_targets(args.targets)
 
     frames = []
     for spec in args.run:
@@ -377,7 +382,12 @@ def main():
         raise SystemExit("No valid benchmark_results.csv rows loaded.")
 
     all_rows = pd.concat(frames, ignore_index=True)
+    if not expected:
+        expected = sorted(all_rows["pdb_id"].dropna().astype(str).str.lower().unique().tolist())
     all_rows = all_rows[~all_rows["pdb_id"].isin(exclude)].copy()
+    expected_eval = [t for t in expected if t not in exclude]
+    if not expected_eval:
+        raise SystemExit("No evaluation targets left after exclusion.")
 
     seed_metrics = summarize_seed_metrics(all_rows, expected_eval)
     main_tbl = aggregate_with_ci(seed_metrics)[[
@@ -385,6 +395,7 @@ def main():
         "sr2", "sr2_ci95",
         "sr5", "sr5_ci95",
         "median_rmsd", "median_rmsd_ci95",
+        "oracle_median_rmsd", "oracle_median_rmsd_ci95",
         "crash_rate", "crash_rate_ci95",
         "fallback_rate", "fallback_rate_ci95",
     ]].copy()

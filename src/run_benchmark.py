@@ -339,7 +339,7 @@ def main():
     with open(csv_path, "w", newline="") as f:
         fieldnames = [
             "pdb_id", "seed",
-            "best_rmsd", "mean_rmsd", "final_energy",
+            "best_rmsd", "oracle_best_rmsd", "mean_rmsd", "final_energy",
             "log_Z_final", "ess_min", "resample_count", "pb_valid_frac", "mmff_fallback_rate",
             "rank_proxy_final", "rank_spearman", "rank_top1_hit", "rank_top3_hit", "ranked_rmsd",
             "steps", "time_sec",
@@ -354,6 +354,7 @@ def main():
                 "rank_proxy_final", "rank_spearman", "rank_top1_hit", "rank_top3_hit", "ranked_rmsd",
             ):
                 row.setdefault(k, "")
+            row.setdefault("oracle_best_rmsd", row.get("best_rmsd", ""))
             row.setdefault("time_sec", 0)
             writer.writerow(row)
 

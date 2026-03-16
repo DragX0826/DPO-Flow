@@ -1219,6 +1219,7 @@ class SAEBFlowRefinement:
             "rank_top1_hit": rank_top1_hit,
             "rank_top3_hit": rank_top3_hit,
             "ranked_rmsd": ranked_rmsd,
+            "selected_idx": int(rank_order[0].item()) if rank_order.numel() else 0,
         }
 
     def _call_smina_score(self, protein_pdb, ligand_sdf):
@@ -1313,9 +1314,13 @@ class SAEBFlowRefinement:
 
             with torch.no_grad():
                 final_rmsd_all = kabsch_rmsd(refined_poses, pos_native)
-                best_idx = final_rmsd_all.argmin()
-                pos_L_final = refined_poses[best_idx:best_idx+1].detach()
-                best_rmsd = final_rmsd_all[best_idx].item()
+                oracle_best_idx = int(final_rmsd_all.argmin().item())
+                selected_idx = int(refine_out.get("selected_idx", oracle_best_idx))
+                if selected_idx < 0 or selected_idx >= refined_poses.size(0):
+                    selected_idx = oracle_best_idx
+                pos_L_final = refined_poses[selected_idx:selected_idx+1].detach()
+                best_rmsd = final_rmsd_all[selected_idx].item()
+                oracle_best_rmsd = final_rmsd_all[oracle_best_idx].item()
                 best_pos = pos_L_final[0].detach().cpu().numpy()
 
             history_E = refine_out.get("history_E", [])
@@ -1326,7 +1331,8 @@ class SAEBFlowRefinement:
 
             if not getattr(self.config, "quiet", False):
                 print(f"\n{'='*55}")
-                print(f" {self.config.pdb_id:8s}  best={best_rmsd:.2f}A  "
+                print(f" {self.config.pdb_id:8s}  selected={best_rmsd:.2f}A  "
+                      f"oracle_best={oracle_best_rmsd:.2f}A  "
                       f"mean={final_rmsd_all.mean():.2f}A  E={final_energy:.1f}")
                 if history_E:
                     print(self.visualizer.interpreter.interpret_energy_trend(history_E))
@@ -1339,6 +1345,7 @@ class SAEBFlowRefinement:
             return {
                 "pdb_id":          self.config.pdb_id,
                 "best_rmsd":       best_rmsd,
+                "oracle_best_rmsd": oracle_best_rmsd,
                 "mean_rmsd":       final_rmsd_all.mean().item(),
                 "final_energy":    final_energy,
                 "mean_cossim":     float("nan"),
@@ -1963,6 +1970,7 @@ class SAEBFlowRefinement:
         return {
             "pdb_id":          self.config.pdb_id,
             "best_rmsd":       best_rmsd,
+            "oracle_best_rmsd": best_rmsd,
             "mean_rmsd":       final_rmsd.mean().item(),
             "final_energy":    final_energy,
             "mean_cossim":     np.mean(history_CosSim) if history_CosSim else 0.0,
