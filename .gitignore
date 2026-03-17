@@ -35,6 +35,14 @@ fig*.pdf
 fig*.png
 results_table.tex
 generated_candidates.sdf
+results/
+quantum/qm_negative_result_package/
+quantum/outputs/
+deliverables/*.zip
+
+!deliverables/
+!deliverables/workshop_evidence/
+!deliverables/workshop_evidence/**
 
 # VS Code / IDE
 .vscode/

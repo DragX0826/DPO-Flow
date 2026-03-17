@@ -1,0 +1,3 @@
+pdb_id,seed,selected_rmsd,oracle_best_rmsd,ligand_only_rmsd,complex_rmsd,ligand_only_delta_vs_selected,complex_delta_vs_selected,ligand_only_ok_count,complex_ok_count,ligand_only_recommended_idx,complex_recommended_idx
+1gpk,42,1.931907534599304,1.7388392686843872,2.3388400077819824,2.3388400077819824,0.40693247318267844,0.40693247318267844,5,4,9,9
+1b8o,42,2.532689094543457,2.17907452583313,2.745176315307617,2.745176315307617,0.21248722076416016,0.21248722076416016,2,1,0,0
