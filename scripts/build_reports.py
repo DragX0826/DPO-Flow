@@ -305,6 +305,7 @@ def main() -> None:
         encoding="utf-8",
     )
     print(f"Updated report packages under: {ROOT.resolve()}")
+    print("Note: this script expects the benchmark CSV inputs and QM summary inputs to be available locally.")
 
 
 if __name__ == "__main__":

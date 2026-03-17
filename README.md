@@ -4,6 +4,40 @@ PoseRefineLab is the working repository for our docking and pose-refinement proj
 
 The repository is organized around the code that is still relevant, the current report packages, and the scripts required to regenerate them.
 
+## Installation
+
+Use Python 3.10+.
+
+```bash
+python -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+```
+
+On Windows PowerShell:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+## Dependencies
+
+Core runtime dependencies are listed in `requirements.txt`.
+
+Main packages:
+
+- `torch`
+- `numpy`
+- `pandas`
+- `matplotlib`
+- `seaborn`
+- `scikit-learn`
+- `biopython`
+- `rdkit`
+- `fair-esm`
+
 ## What This Repo Contains
 
 - `src/`
@@ -53,6 +87,15 @@ Quantum package:
 - `reports/quantum/qm_rmsd_comparison.png`
 - `reports/quantum/qm_delta_vs_selected.png`
 
+## Benchmark Snapshot
+
+Current public report package highlights:
+
+- `SOCM` is slightly better on aggregate accuracy
+- `FK-SMC + SOCM` is more stable across seeds
+- hard targets remain primarily `search-limited`
+- QM rescoring is currently documented as a pilot negative result
+
 ## Rebuilding The Reports
 
 From the repository root:
@@ -66,7 +109,7 @@ This regenerates:
 - `reports/docking/`
 - `reports/quantum/`
 
-from the retained final CSV inputs and QM summary files.
+when the required benchmark CSV inputs and QM summary inputs are available locally.
 
 ## Benchmark Entry Points
 

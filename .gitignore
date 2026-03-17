@@ -37,13 +37,16 @@ results_table.tex
 generated_candidates.sdf
 archive/
 cache/
+plots/
 results/
 Final_Submission_Data/
 quantum/qm_negative_result_package/
 quantum/outputs/
+all_results.pt
 *.log
 *.zip
 results/
+tests/temp_*/
 !reports/
 !reports/**
 
